@@ -6,7 +6,7 @@ import type {
   PluginClientContext,
 } from "@getpaseo/plugin/client";
 import type { ComponentType } from "react";
-import { argocdGet, argocdRefs, deployState, lastMention, pillLabel, tone, type DeployStatus, type Tone } from "../shared/argocd.ts";
+import { agentText, argocdGet, argocdRefs, deployState, lastMention, pillLabel, tone, type DeployStatus, type Tone } from "../shared/argocd.ts";
 
 // The slice of the host this module uses: index.client.tsx hands in the plugin context, the tests a fake.
 export interface ArgocdPillClient {
@@ -124,8 +124,9 @@ export function registerArgocdPills(
     const sub = client.paseo.agents.ref(agent.id).timeline.subscribe((e) => {
       if (!current()) return;
       // Live events have no cluster knowledge: adopt the last named app as it appears (the refs RPC re-validates on restore).
+      // Only the session's own text counts, as in the refs RPC: a tool result naming an app must not raise the pill.
       if (e.event.type === "timeline") {
-        const app = lastMention(JSON.stringify(e.event.item));
+        const app = lastMention(agentText(e.event.item));
         if (app) entry.see(app);
       } else if (e.event.type === "replacement" || e.event.type === "subscription_restored") lookup(agent.id);
     });
