@@ -1,10 +1,11 @@
 # paseo-argocd
 
 A Paseo plugin that shows, next to the composer's other pills, the ArgoCD deployment of the application an agent is
-working on: the helm mark tinted by the state and the app name — `paseo ◐` (syncing or rolling out), `paseo ✓`
-(Synced + Healthy), `paseo ✗` (degraded or failed operation), `paseo · out` (OutOfSync at rest), `paseo ?` (unreadable).
-Tap it for sync, health, the operation's phase, message and live duration, the revision, the resources that are not ok,
-and a link to the ArgoCD UI.
+working on: the helm mark tinted by the state, the app name and both axes — `paseo ✓ Synced·Healthy`,
+`paseo ◐ Synced·Progressing` (syncing or rolling out), `paseo ✗ Synced·Degraded` (degraded or failed operation),
+`paseo · OutOfSync·Healthy` (at rest), `paseo ?` (unreadable).
+Tap it for the Spanish reading of the same state, the operation's phase, message and live duration, the revision, the
+resources that are not ok, and a link to the ArgoCD UI.
 
 - The app is the last one the agent's conversation names: `argocd app sync paseo`, `ESPERA: argocd paseo`,
   `kubectl get application paseo -n argocd`, the UI link, or — when no app is named — the last mention of a deploy repo
