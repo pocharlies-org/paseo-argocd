@@ -1,11 +1,10 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { deployState, lastAppRef, lastMention, pillLabel, tone } from "../shared/argocd.ts";
+import { agentText, deployState, lastAppRef, lastMention, pillLabel, tone } from "../shared/argocd.ts";
 import { parseApp } from "../server/cluster.ts";
 
 const known = new Set(["paseo", "web", "litellm"]);
-const repoToApp = new Map([["k8s-paseo-pocharlies", "paseo"]]);
-const app = (text: string) => lastAppRef(text, known, repoToApp);
+const app = (text: string) => lastAppRef(text, known);
 
 test("lastAppRef: every form, the last existing one wins", () => {
   assert.equal(app('{"command":"argocd app sync paseo --prune"}'), "paseo");
@@ -19,9 +18,29 @@ test("lastAppRef: every form, the last existing one wins", () => {
   assert.equal(app("kubectl get cm gpu-arbiter-state -n comfyui"), null);
 });
 
-test("lastAppRef: the repo fallback only for repos with exactly one app", () => {
-  assert.equal(app("fusionado k8s-paseo-pocharlies#7, ArgoCD despliega"), "paseo");
-  assert.equal(app("fusionado dgx-infra#1879"), null); // dgx-infra is not in the unique map
+test("lastAppRef: a repo name alone is not a mention", () => {
+  assert.equal(app("fusionado k8s-paseo-pocharlies#7, ArgoCD despliega"), null);
+  assert.equal(app("el repo k8s-paseo-pocharlies lee deploy/prod"), null);
+});
+
+test("agentText: only what the session wrote or ran", () => {
+  assert.equal(agentText({ type: "user_message", text: "ESPERA: argocd web" }), "ESPERA: argocd web");
+  assert.equal(agentText({ type: "assistant_message", text: "argocd app sync paseo" }), "argocd app sync paseo");
+  assert.equal(
+    agentText({ type: "tool_call", detail: { type: "shell", command: "kubectl get application paseo -n argocd" } }),
+    "kubectl get application paseo -n argocd",
+  );
+  // the output of a tool is not the session's text: a skill loaded there does not link its app
+  assert.equal(agentText({ type: "tool_call", detail: { type: "other" } }), "");
+  assert.equal(agentText({ type: "reasoning", text: "argocd app sync paseo" }), "");
+  assert.equal(agentText(null), "");
+  // end to end over a timeline: the skill text names the app, the session never does → no pill
+  const timeline = [
+    { type: "tool_call", detail: { type: "other" } }, // skill_load: its result (k8s-agentjake-chrome-pocharlies) is not scanned
+    { type: "reasoning", text: 'usaré el navegador: argocd app get agentjake-chrome' },
+    { type: "assistant_message", text: "compruebo el estado de la suscripción" },
+  ];
+  assert.equal(lastAppRef(timeline.map(agentText).join("\n"), new Set(["agentjake-chrome"])), null);
 });
 
 test("lastMention needs no cluster", () => {

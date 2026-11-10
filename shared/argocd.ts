@@ -55,22 +55,28 @@ export function lastMention(text: string): string | null {
 }
 
 /**
- * The ArgoCD app a piece of text points at: its last mention that exists in the cluster; if none names an app, the
- * last mention of a deploy repo that belongs to exactly one app (`k8s-paseo-pocharlies` → `paseo`).
- * shortcut: <apps live in ns argocd and one app per agent (the last named); repos shared by several apps (dgx-infra)
- * are not mapped>, <upgrade if agents need to watch several apps>.
+ * The ArgoCD app a piece of text points at: its last mention that exists in the cluster. A repo name alone is not a
+ * mention: the pill is only for what the session waits on or deploys, never for what it merely reads.
+ * shortcut: <apps live in ns argocd and one app per agent (the last named)>, <upgrade if agents need to watch several apps>.
  */
-export function lastAppRef(text: string, known: ReadonlySet<string>, repoToApp: ReadonlyMap<string, string>): string | null {
+export function lastAppRef(text: string, known: ReadonlySet<string>): string | null {
   let best: { at: number; app: string } | null = null;
   for (const m of mentions(text)) {
     if (known.has(m.app) && (!best || m.at >= best.at)) best = m;
   }
-  if (best) return best.app;
-  for (const [repo, app] of repoToApp) {
-    const at = text.lastIndexOf(repo);
-    if (at >= 0 && (!best || at > best.at)) best = { at, app };
-  }
   return best?.app ?? null;
+}
+
+/**
+ * The text a session itself wrote or ran: user and assistant messages and shell commands. Tool results (the text of a
+ * skill, the output of kubectl), reasoning and notifications are never scanned: they name apps the session is not
+ * deploying. Structural type on purpose — shared is also loaded by the client.
+ */
+export function agentText(item: { type: string; text?: string; detail?: { type?: string; command?: string } } | null | undefined): string {
+  if (!item) return "";
+  if (item.type === "user_message" || item.type === "assistant_message") return item.text ?? "";
+  if (item.type === "tool_call") return item.detail?.type === "shell" ? item.detail.command ?? "" : "";
+  return "";
 }
 
 export type DeployState = "pending" | "failure" | "success" | "none";
