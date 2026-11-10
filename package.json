@@ -3,7 +3,7 @@
   "private": true,
   "version": "1.0.0",
   "type": "module",
-  "description": "Paseo plugin: CI state of the pull request an agent is working on.",
+  "description": "Paseo plugin: ArgoCD deployment state of the app an agent is deploying.",
   "files": [
     "paseo-plugin.json",
     "index.client.tsx",
