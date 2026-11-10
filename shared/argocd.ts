@@ -98,11 +98,14 @@ export function tone(d: DeployStatus | null): Tone {
 
 export const GLYPH: Record<DeployState, string> = { success: "✓", failure: "✗", pending: "◐", none: "·" };
 
-/** The pill's short label: `paseo ◐`, `paseo ✓`, `paseo ✗`, `paseo ·` (OutOfSync at rest), `paseo ?` (unreadable). */
+/**
+ * The pill's label: the app, the state glyph and BOTH axes — `paseo ✓ Synced·Healthy`, `paseo ◐ Synced·Progressing`,
+ * `paseo ✗ Synced·Degraded`, `paseo · OutOfSync·Healthy` (at rest), `paseo ?` (unreadable). The glyph and its colour
+ * say good/bad/pending; the words say which of the two axes is which, so a glance answers "está todo bien".
+ * ArgoCD's own words, as `kubectl get application` and the panel show them (the popover is where they read in Spanish).
+ */
 export function pillLabel(app: string, d: DeployStatus | null): string {
   if (!d) return app;
   if (d.error) return `${app} ?`;
-  const s = deployState(d);
-  if (s === "none") return `${app} ${GLYPH.none} ${d.sync === "OutOfSync" ? "out" : d.health.toLowerCase()}`;
-  return `${app} ${GLYPH[s]}`;
+  return `${app} ${GLYPH[deployState(d)]} ${d.sync}·${d.health}`;
 }
