@@ -1,11 +1,22 @@
 import { execCommand } from "@getpaseo/plugin/server";
+import { readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import type { DeployStatus } from "../shared/argocd.ts";
 
 // The daemon reads the cluster with its own kubeconfig (the paseo pod reaches the API over the tailnet): no credential
 // reaches the client. shortcut: <every Application lives in ns argocd (the root app-of-apps pattern)>, <upgrade if namespaced apps appear>.
 const NS = "argocd";
-const UI = "https://argocd.lan.e-dani.com/applications/argocd/";
+// Base of the ArgoCD UI for the popover link: ARGOCD_UI, or the first line of ~/.config/paseo-argocd/ui; empty = no link.
+const uiBase = (
+  process.env.ARGOCD_UI ??
+  (() => {
+    try {
+      return readFileSync(`${homedir()}/.config/paseo-argocd/ui`, "utf8").trim();
+    } catch {
+      return "";
+    }
+  })()
+).replace(/\/+$/, "");
 const env = { ...process.env, KUBECONFIG: process.env.KUBECONFIG ?? `${homedir()}/.kube/config` };
 
 interface AppJson {
@@ -24,7 +35,7 @@ export function parseApp(name: string, a: AppJson): DeployStatus {
     (r) => (r.health && r.health.status !== "Healthy") || (r.status && r.status !== "Synced"),
   );
   return {
-    url: `${UI}${name}`,
+    url: uiBase ? `${uiBase}/${name}` : "",
     sync: a.status.sync?.status ?? "Unknown",
     health: a.status.health?.status ?? "Unknown",
     operation: op?.phase ?? "",

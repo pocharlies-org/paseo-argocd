@@ -1,7 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { deployState, lastAppRef, lastMention, pillLabel, tone } from "../shared/argocd.ts";
-import { parseApp } from "../server/cluster.ts";
 
 const known = new Set(["paseo", "web", "litellm"]);
 const repoToApp = new Map([["k8s-paseo-pocharlies", "paseo"]]);
@@ -12,7 +11,7 @@ test("lastAppRef: every form, the last existing one wins", () => {
   assert.equal(app("ESPERA: argocd web → llega a producción"), "web");
   assert.equal(app('{"command":"kubectl get application litellm -n argocd -o json"}'), "litellm");
   assert.equal(app('{"command":"kubectl -n argocd get apps paseo"}'), "paseo");
-  assert.equal(app("https://argocd.lan.e-dani.com/applications/argocd/web?resource=application"), "web");
+  assert.equal(app("https://argocd.example.com/applications/argocd/web?resource=application"), "web");
   assert.equal(app("argocd app sync web y luego argocd app sync paseo"), "paseo");
   assert.equal(app("argocd app sync noexiste"), null); // not in the cluster: no pill
   assert.equal(app("kubectl get applications -n argocd"), null); // a list, not one app
@@ -51,7 +50,9 @@ test("deployState, tone and label", () => {
   assert.equal(tone(full("Synced", "Healthy", "", "boom")), null);
 });
 
-test("parseApp: a live Application JSON", () => {
+test("parseApp: a live Application JSON, URL from ARGOCD_UI", async () => {
+  process.env.ARGOCD_UI = "https://argocd.example.com/applications/argocd/";
+  const { parseApp } = await import("../server/cluster.ts");
   const a = parseApp("paseo", {
     spec: { source: { repoURL: "https://github.com/pocharlies-org/k8s-paseo-pocharlies" }, targetRevision: "deploy/prod" },
     status: {
@@ -67,5 +68,5 @@ test("parseApp: a live Application JSON", () => {
   assert.deepEqual([a.sync, a.health, a.operation, a.revision.slice(0, 7)], ["Synced", "Progressing", "Running", "8523e00"]);
   assert.equal(a.message, "waiting for rollout to finish");
   assert.deepEqual(a.resources.map((r) => r.key), ["StatefulSet/paseo/paseo"]); // only the one that is not ok
-  assert.match(a.url, /argocd\.lan\.e-dani\.com\/applications\/argocd\/paseo$/);
+  assert.equal(a.url, "https://argocd.example.com/applications/argocd/paseo");
 });

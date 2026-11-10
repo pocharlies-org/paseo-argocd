@@ -13,6 +13,8 @@ resources that are not ok, and a link to the ArgoCD UI.
   mapped. It works in workspaces that are not a git checkout.
 - The daemon reads the cluster with its own kubeconfig (`kubectl get application -n argocd`), so no credential reaches
   the client. It needs `kubectl` and a kubeconfig on the daemon's host.
+- The UI link needs your ArgoCD base URL: set `ARGOCD_UI` on the daemon (e.g. `https://argocd.example.com`) or put it in
+  the first line of `~/.config/paseo-argocd/ui`. Without it the popover simply shows no link.
 - Polls every 10 s while the deployment moves, every 2 min once settled; one read per app every 15 s at most, whatever
   the clients.
 
