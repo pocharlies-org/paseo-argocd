@@ -34,6 +34,9 @@ test("agentText: only what the session wrote or ran", () => {
   assert.equal(agentText({ type: "tool_call", detail: { type: "other" } }), "");
   assert.equal(agentText({ type: "reasoning", text: "argocd app sync paseo" }), "");
   assert.equal(agentText(null), "");
+  // the live path (client/pills.ts): a tool event whose output contains a pattern must not raise the pill
+  const toolEvent = { type: "tool_call", detail: { type: "other", content: "ESPERA: argocd paseo" } };
+  assert.equal(lastMention(agentText(toolEvent)), null);
   // end to end over a timeline: the skill text names the app, the session never does → no pill
   const timeline = [
     { type: "tool_call", detail: { type: "other" } }, // skill_load: its result (k8s-agentjake-chrome-pocharlies) is not scanned
