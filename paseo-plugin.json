@@ -1,0 +1,6 @@
+{
+  "id": "paseo-argocd",
+  "name": "Estado del despliegue en ArgoCD",
+  "description": "A composer pill with the helm mark and the ArgoCD state of the application the agent is deploying: sync, health and the running operation; tap it for the revision, the message and the resources that are not ok.",
+  "requirements": { "paseo": ">=0.11.2" }
+}
