@@ -40,10 +40,10 @@ test("deployState, tone and label", () => {
   const full = (sync: string, health: string, operation = "", error: string | null = null) => ({
     url: "", sync, health, operation, revision: "", message: "", startedAt: null, completedAt: null, resources: [], error,
   });
-  assert.equal(pillLabel("paseo", full("Synced", "Healthy", "Succeeded")), "paseo ✓");
-  assert.equal(pillLabel("paseo", full("OutOfSync", "Progressing", "Running")), "paseo ◐");
-  assert.equal(pillLabel("paseo", full("Synced", "Degraded")), "paseo ✗");
-  assert.equal(pillLabel("paseo", full("OutOfSync", "Healthy")), "paseo · out");
+  assert.equal(pillLabel("paseo", full("Synced", "Healthy", "Succeeded")), "paseo ✓ Synced·Healthy");
+  assert.equal(pillLabel("paseo", full("OutOfSync", "Progressing", "Running")), "paseo ◐ OutOfSync·Progressing");
+  assert.equal(pillLabel("paseo", full("Synced", "Degraded")), "paseo ✗ Synced·Degraded");
+  assert.equal(pillLabel("paseo", full("OutOfSync", "Healthy")), "paseo · OutOfSync·Healthy");
   assert.equal(pillLabel("paseo", null), "paseo");
   assert.equal(pillLabel("paseo", full("", "", "", "kubectl: not found")), "paseo ?");
   assert.equal(tone(full("OutOfSync", "Healthy")), null); // at rest: no colour
