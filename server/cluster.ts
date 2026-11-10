@@ -50,7 +50,7 @@ const empty: DeployStatus = {
 const TTL_GET_MS = 15_000;
 const TTL_LIST_MS = 60_000;
 const cacheGet = new Map<string, { at: number; value: Promise<DeployStatus> }>();
-let listing: { at: number; value: Promise<{ known: Set<string>; repoToApp: Map<string, string> }> } | null = null;
+let listing: { at: number; value: Promise<Set<string>> } | null = null;
 
 /** One read per app every 15 s, however many clients and agents ask. Failures come back as `error`, not thrown. */
 export function readApp(app: string): Promise<DeployStatus> {
@@ -64,26 +64,14 @@ export function readApp(app: string): Promise<DeployStatus> {
   return value;
 }
 
-/** The cluster's app names and the repos that belong to exactly one app (a shared repo like dgx-infra maps to nothing). */
-export function clusterIndex(): Promise<{ known: Set<string>; repoToApp: Map<string, string> }> {
+/** The cluster's app names. */
+export function clusterIndex(): Promise<Set<string>> {
   if (listing && Date.now() - listing.at < TTL_LIST_MS) return listing.value;
   listing = {
     at: Date.now(),
     value: execCommand("kubectl", ["get", "applications", "-n", NS, "-o", "json"], { env, timeout: 30_000 })
-      .then(({ stdout }) => {
-        const items = (JSON.parse(stdout).items ?? []) as Array<{ metadata: { name: string }; spec: { source?: { repoURL?: string } } }>;
-        const known = new Set(items.map((i) => i.metadata.name));
-        const byRepo = new Map<string, string | null>();
-        for (const i of items) {
-          const repo = (i.spec.source?.repoURL ?? "").replace(/^https:\/\/github\.com\//, "").replace(/\.git$/, "");
-          if (!repo) continue;
-          const short = repo.split("/").pop()!;
-          byRepo.set(short, byRepo.get(short) === undefined ? i.metadata.name : null); // null = several apps share it
-        }
-        const repoToApp = new Map([...byRepo].filter(([, v]) => v) as Array<[string, string]>);
-        return { known, repoToApp };
-      })
-      .catch(() => ({ known: new Set<string>(), repoToApp: new Map<string, string>() })),
+      .then(({ stdout }) => new Set<string>(((JSON.parse(stdout).items ?? []) as Array<{ metadata: { name: string } }>).map((i) => i.metadata.name)))
+      .catch(() => new Set<string>()),
   };
   return listing.value;
 }
