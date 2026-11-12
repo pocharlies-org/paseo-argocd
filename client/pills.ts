@@ -170,7 +170,7 @@ export function registerArgocdPills(
 }
 
 const noDeploy: DeployStatus = {
-  url: "", sync: "Unknown", health: "Unknown", operation: "", revision: "", message: "",
+  url: "", panel: "", sync: "Unknown", health: "Unknown", operation: "", revision: "", message: "",
   startedAt: null, completedAt: null, resources: [], error: null,
 };
 

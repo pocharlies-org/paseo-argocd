@@ -17,6 +17,18 @@ const uiBase = (
     }
   })()
 ).replace(/\/+$/, "");
+// Base of the platform (Control Nexus) for the popover's primary link: PASEO_ARGOCD_PANEL, or the first line of
+// ~/.config/paseo-argocd/panel; empty = no panel link (the ArgoCD UI link alone).
+const panelBase = (
+  process.env.PASEO_ARGOCD_PANEL ??
+  (() => {
+    try {
+      return readFileSync(`${homedir()}/.config/paseo-argocd/panel`, "utf8").trim();
+    } catch {
+      return "";
+    }
+  })()
+).replace(/\/+$/, "");
 const env = { ...process.env, KUBECONFIG: process.env.KUBECONFIG ?? `${homedir()}/.kube/config` };
 
 interface AppJson {
@@ -36,6 +48,7 @@ export function parseApp(name: string, a: AppJson): DeployStatus {
   );
   return {
     url: uiBase ? `${uiBase}/${name}` : "",
+    panel: panelBase ? `${panelBase}/services?mode=argocd&app=${name}` : "",
     sync: a.status.sync?.status ?? "Unknown",
     health: a.status.health?.status ?? "Unknown",
     operation: op?.phase ?? "",
@@ -54,7 +67,7 @@ export function parseApp(name: string, a: AppJson): DeployStatus {
 }
 
 const empty: DeployStatus = {
-  url: "", sync: "Unknown", health: "Unknown", operation: "", revision: "", message: "",
+  url: "", panel: "", sync: "Unknown", health: "Unknown", operation: "", revision: "", message: "",
   startedAt: null, completedAt: null, resources: [], error: null,
 };
 
