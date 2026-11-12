@@ -38,9 +38,14 @@ export function ArgocdPopover(props: PluginButtonContentProps) {
     <View style={{ padding: 12, gap: 8, minWidth: 320, maxWidth: 480 }}>
       <View style={{ gap: 2 }}>
         <Text style={muted}>ArgoCD · argocd/{app}</Text>
-        {deploy.url ? (
-          <ExternalLink href={deploy.url}>
+        {deploy.panel || deploy.url ? (
+          <ExternalLink href={deploy.panel || deploy.url}>
             <Text style={{ color: c.foreground, fontSize: 14, fontWeight: "600" }}>{app}</Text>
+          </ExternalLink>
+        ) : null}
+        {deploy.panel && deploy.url ? (
+          <ExternalLink href={deploy.url}>
+            <Text style={{ color: c.foregroundMuted, fontSize: 12 }}>Abrir en ArgoCD</Text>
           </ExternalLink>
         ) : null}
       </View>

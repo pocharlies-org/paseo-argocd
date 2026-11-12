@@ -16,6 +16,9 @@ resources that are not ok, and a link to the ArgoCD UI.
   the client. It needs `kubectl` and a kubeconfig on the daemon's host.
 - The UI link needs your ArgoCD base URL: set `ARGOCD_UI` on the daemon (e.g. `https://argocd.example.com`) or put it in
   the first line of `~/.config/paseo-argocd/ui`. Without it the popover simply shows no link.
+- If you run the Control Nexus dashboard, the popover's main link goes to its Kubernetes view (`<base>/services?mode=argocd&app=<app>`):
+  set `PASEO_ARGOCD_PANEL` (e.g. `https://dgx.example.com`) or the first line of `~/.config/paseo-argocd/panel`. Without it
+  the popover links only to the ArgoCD UI.
 - Polls every 10 s while the deployment moves, every 2 min once settled; one read per app every 15 s at most, whatever
   the clients.
 

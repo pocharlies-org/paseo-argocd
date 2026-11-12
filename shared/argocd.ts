@@ -8,6 +8,7 @@ export type AppRef = z.output<typeof appRefSchema>;
 
 export const deploySchema = z.object({
   url: z.string(),
+  panel: z.string(), // the platform's Kubernetes view for this app (empty = not configured)
   sync: z.string(), // Synced | OutOfSync | Unknown
   health: z.string(), // Healthy | Progressing | Degraded | Suspended | Missing | Unknown
   operation: z.string(), // Running | Succeeded | Failed | Error | Terminated | "" (no operation yet)

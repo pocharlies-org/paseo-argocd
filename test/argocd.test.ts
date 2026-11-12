@@ -59,7 +59,7 @@ test("deployState, tone and label", () => {
   assert.equal(deployState(d("Synced", "Healthy", "Failed")), "failure");
   assert.equal(deployState(d("OutOfSync", "Missing")), "none");
   const full = (sync: string, health: string, operation = "", error: string | null = null) => ({
-    url: "", sync, health, operation, revision: "", message: "", startedAt: null, completedAt: null, resources: [], error,
+    url: "", panel: "", sync, health, operation, revision: "", message: "", startedAt: null, completedAt: null, resources: [], error,
   });
   assert.equal(pillLabel("paseo", full("Synced", "Healthy", "Succeeded")), "paseo ✓ Synced·Healthy");
   assert.equal(pillLabel("paseo", full("OutOfSync", "Progressing", "Running")), "paseo ◐ OutOfSync·Progressing");
@@ -72,8 +72,9 @@ test("deployState, tone and label", () => {
   assert.equal(tone(full("Synced", "Healthy", "", "boom")), null);
 });
 
-test("parseApp: a live Application JSON, URL from ARGOCD_UI", async () => {
+test("parseApp: a live Application JSON, URL from ARGOCD_UI and panel from PASEO_ARGOCD_PANEL", async () => {
   process.env.ARGOCD_UI = "https://argocd.example.com/applications/argocd/";
+  process.env.PASEO_ARGOCD_PANEL = "https://dgx.example.com/";
   const { parseApp } = await import("../server/cluster.ts");
   const a = parseApp("paseo", {
     spec: { source: { repoURL: "https://github.com/pocharlies-org/k8s-paseo-pocharlies" }, targetRevision: "deploy/prod" },
@@ -91,4 +92,5 @@ test("parseApp: a live Application JSON, URL from ARGOCD_UI", async () => {
   assert.equal(a.message, "waiting for rollout to finish");
   assert.deepEqual(a.resources.map((r) => r.key), ["StatefulSet/paseo/paseo"]); // only the one that is not ok
   assert.equal(a.url, "https://argocd.example.com/applications/argocd/paseo");
+  assert.equal(a.panel, "https://dgx.example.com/services?mode=argocd&app=paseo");
 });
