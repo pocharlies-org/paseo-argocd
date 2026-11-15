@@ -24,7 +24,7 @@ export type DeployStatus = z.output<typeof deploySchema>;
 /** The live state of one ArgoCD application, read by the daemon with its own kubeconfig. */
 export const argocdGet = defineRpc({ name: "argocd.get", input: appRefSchema.strict(), output: deploySchema });
 
-/** Each agent's ArgoCD app (see lastAppRef), resolved by the daemon against the cluster: the client never reads kubectl. */
+/** Each agent's ArgoCD app (see lastKnown), resolved by the daemon against the cluster: the client never reads kubectl. */
 export const argocdRefs = defineRpc({
   name: "argocd.refs",
   input: z.object({ agentIds: z.array(z.string()) }).strict(),
@@ -56,13 +56,11 @@ export function lastMention(text: string): string | null {
 }
 
 /**
- * The ArgoCD app a piece of text points at: its last mention that exists in the cluster. A repo name alone is not a
- * mention: the pill is only for what the session waits on or deploys, never for what it merely reads.
+ * The ArgoCD app some mentions point at: the last one that exists in the cluster (the daemon keeps each agent's mentions
+ * and re-checks them). A repo name alone is not a mention: the pill is only for what the session waits on or deploys,
+ * never for what it merely reads.
  * shortcut: <apps live in ns argocd and one app per agent (the last named)>, <upgrade if agents need to watch several apps>.
  */
-export const lastAppRef = (text: string, known: ReadonlySet<string>) => lastKnown(mentions(text), known);
-
-/** The last of some mentions that exists in the cluster: the daemon keeps each agent's mentions and re-checks them. */
 export function lastKnown(found: ReadonlyArray<{ at: number; app: string }>, known: ReadonlySet<string>): string | null {
   let best: { at: number; app: string } | null = null;
   for (const m of found) {

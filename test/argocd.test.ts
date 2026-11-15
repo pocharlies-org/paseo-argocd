@@ -1,11 +1,11 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { agentText, deployState, lastAppRef, lastKnown, lastMention, mentions, pillLabel, tone } from "../shared/argocd.ts";
+import { agentText, deployState, lastKnown, lastMention, mentions, pillLabel, tone } from "../shared/argocd.ts";
 
 const known = new Set(["paseo", "web", "litellm"]);
-const app = (text: string) => lastAppRef(text, known);
+const app = (text: string) => lastKnown(mentions(text), known);
 
-test("lastAppRef: every form, the last existing one wins", () => {
+test("lastKnown: every form, the last existing one wins", () => {
   assert.equal(app('{"command":"argocd app sync paseo --prune"}'), "paseo");
   assert.equal(app("ESPERA: argocd web → llega a producción"), "web");
   assert.equal(app('{"command":"kubectl get application litellm -n argocd -o json"}'), "litellm");
@@ -17,7 +17,7 @@ test("lastAppRef: every form, the last existing one wins", () => {
   assert.equal(app("kubectl get cm gpu-arbiter-state -n comfyui"), null);
 });
 
-test("lastAppRef: a repo name alone is not a mention", () => {
+test("lastKnown: a repo name alone is not a mention", () => {
   assert.equal(app("fusionado k8s-paseo-pocharlies#7, ArgoCD despliega"), null);
   assert.equal(app("el repo k8s-paseo-pocharlies lee deploy/prod"), null);
 });
@@ -42,7 +42,7 @@ test("agentText: only what the session wrote or ran", () => {
     { type: "reasoning", text: 'usaré el navegador: argocd app get agentjake-chrome' },
     { type: "assistant_message", text: "compruebo el estado de la suscripción" },
   ];
-  assert.equal(lastAppRef(timeline.map(agentText).join("\n"), new Set(["agentjake-chrome"])), null);
+  assert.equal(lastKnown(mentions(timeline.map(agentText).join("\n")), new Set(["agentjake-chrome"])), null);
 });
 
 test("lastMention needs no cluster", () => {
