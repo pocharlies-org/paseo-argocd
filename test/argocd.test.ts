@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { agentText, deployState, lastAppRef, lastMention, pillLabel, tone } from "../shared/argocd.ts";
+import { agentText, deployState, lastAppRef, lastKnown, lastMention, mentions, pillLabel, tone } from "../shared/argocd.ts";
 
 const known = new Set(["paseo", "web", "litellm"]);
 const app = (text: string) => lastAppRef(text, known);
@@ -93,4 +93,11 @@ test("parseApp: a live Application JSON, URL from ARGOCD_UI and panel from PASEO
   assert.deepEqual(a.resources.map((r) => r.key), ["StatefulSet/paseo/paseo"]); // only the one that is not ok
   assert.equal(a.url, "https://argocd.example.com/applications/argocd/paseo");
   assert.equal(a.panel, "https://dgx.example.com/services?mode=argocd&app=paseo");
+});
+
+test("lastKnown: kept mentions are re-checked against a newer cluster index", () => {
+  const found = mentions("argocd app sync nueva y luego ESPERA: argocd web");
+  assert.equal(lastKnown(found, new Set(["paseo"])), null);
+  assert.equal(lastKnown(found, new Set(["nueva"])), "nueva");
+  assert.equal(lastKnown(found, new Set(["nueva", "web"])), "web");
 });

@@ -60,9 +60,12 @@ export function lastMention(text: string): string | null {
  * mention: the pill is only for what the session waits on or deploys, never for what it merely reads.
  * shortcut: <apps live in ns argocd and one app per agent (the last named)>, <upgrade if agents need to watch several apps>.
  */
-export function lastAppRef(text: string, known: ReadonlySet<string>): string | null {
+export const lastAppRef = (text: string, known: ReadonlySet<string>) => lastKnown(mentions(text), known);
+
+/** The last of some mentions that exists in the cluster: the daemon keeps each agent's mentions and re-checks them. */
+export function lastKnown(found: ReadonlyArray<{ at: number; app: string }>, known: ReadonlySet<string>): string | null {
   let best: { at: number; app: string } | null = null;
-  for (const m of mentions(text)) {
+  for (const m of found) {
     if (known.has(m.app) && (!best || m.at >= best.at)) best = m;
   }
   return best?.app ?? null;
