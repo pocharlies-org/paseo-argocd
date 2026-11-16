@@ -19,9 +19,9 @@ resources that are not ok, and a link to the ArgoCD UI.
 - If you run the Control Nexus dashboard, the popover's main link goes to its Kubernetes view (`<base>/services?mode=argocd&app=<app>`):
   set `PASEO_ARGOCD_PANEL` (e.g. `https://dgx.example.com`) or the first line of `~/.config/paseo-argocd/panel`. Without it
   the popover links only to the ArgoCD UI.
-- Nothing polls. The daemon keeps one Kubernetes watch on the Applications, whatever the clients, and each app holds one
-  `argocd.watch` call that the daemon answers only when one of its pills' apps changes what the pill shows (a reconcile
-  that changes nothing wakes nobody).
+- Nothing polls. The daemon keeps one Kubernetes watch on the Applications, whatever the clients, and each client holds
+  one `argocd.watch` call for all the apps its pills show, which the daemon answers only when one of them changes what
+  its pill shows (a reconcile that changes nothing wakes nobody).
 
 ## Install
 
