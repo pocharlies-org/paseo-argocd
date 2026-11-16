@@ -12,15 +12,16 @@ resources that are not ok, and a link to the ArgoCD UI.
   shell commands. Nothing is inferred: tool results (the text of a skill, the output of kubectl), reasoning and repo
   names alone never link an app — the pill appears only for what the session waits on or deploys. It works in
   workspaces that are not a git checkout.
-- The daemon reads the cluster with its own kubeconfig (`kubectl get application -n argocd`), so no credential reaches
-  the client. It needs `kubectl` and a kubeconfig on the daemon's host.
+- The daemon reads the cluster with its own kubeconfig, so no credential reaches the client. It needs `kubectl` and a
+  kubeconfig on the daemon's host that may `watch` Applications in `argocd`.
 - The UI link needs your ArgoCD base URL: set `ARGOCD_UI` on the daemon (e.g. `https://argocd.example.com`) or put it in
   the first line of `~/.config/paseo-argocd/ui`. Without it the popover simply shows no link.
 - If you run the Control Nexus dashboard, the popover's main link goes to its Kubernetes view (`<base>/services?mode=argocd&app=<app>`):
   set `PASEO_ARGOCD_PANEL` (e.g. `https://dgx.example.com`) or the first line of `~/.config/paseo-argocd/panel`. Without it
   the popover links only to the ArgoCD UI.
-- Polls every 10 s while the deployment moves, every 2 min once settled; one read per app every 15 s at most, whatever
-  the clients.
+- Nothing polls. The daemon keeps one Kubernetes watch on the Applications, whatever the clients, and each app holds one
+  `argocd.watch` call that the daemon answers only when one of its pills' apps changes what the pill shows (a reconcile
+  that changes nothing wakes nobody).
 
 ## Install
 

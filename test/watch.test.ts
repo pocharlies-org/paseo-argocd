@@ -1,0 +1,102 @@
+import { test } from "node:test";
+import assert from "node:assert/strict";
+import { appWatch, type OpenWatch } from "../server/cluster.ts";
+
+// A fake API server: records each watch request; the test pushes its lines and closes it.
+function fakeApi() {
+  const opened: Array<{ query: string; line: (t: string) => void; closed: (why: string) => void }> = [];
+  const open: OpenWatch = (query, line, closed) => (opened.push({ query, line, closed }), () => {});
+  return { open, opened, last: () => opened.at(-1)! };
+}
+const app = (name: string, rv: string, health = "Healthy", reconciledAt = "t0") => ({
+  metadata: { name, resourceVersion: rv },
+  spec: {},
+  status: { sync: { status: "Synced", revision: "abc" }, health: { status: health }, reconciledAt },
+});
+const ev = (type: string, object: unknown) => JSON.stringify({ type, object });
+const initialEnd = (rv: string) => ev("BOOKMARK", { metadata: { resourceVersion: rv, annotations: { "k8s.io/initial-events-end": "true" } } });
+const tick = () => new Promise((r) => setImmediate(r));
+
+test("appWatch: one watch streams the initial apps; callers wait for the whole list", async () => {
+  const api = fakeApi();
+  const w = appWatch(api.open, 10);
+  assert.equal(api.opened.length, 1);
+  assert.match(api.last().query, /watch=1.*sendInitialEvents=true&resourceVersionMatch=NotOlderThan/);
+  const first = w.espera(["paseo", "nada"], 0);
+  api.last().line(ev("ADDED", app("paseo", "1")));
+  api.last().line(ev("ADDED", app("web", "2")));
+  api.last().line(initialEnd("3"));
+  const r = await first;
+  assert.equal(r.completo, true);
+  assert.equal(r.apps.paseo!.health, "Healthy");
+  assert.match(r.apps.nada!.error!, /no existe/);
+  assert.deepEqual([...(await w.index())].sort(), ["paseo", "web"]);
+  w.cierra();
+});
+
+test("appWatch: holds the call until an asked app changes what a pill shows, and answers only that", async () => {
+  const api = fakeApi();
+  const w = appWatch(api.open, 5_000);
+  api.last().line(ev("ADDED", app("paseo", "1")));
+  api.last().line(ev("ADDED", app("web", "2")));
+  api.last().line(initialEnd("3"));
+  const { version } = await w.espera(["paseo"], 0);
+  let answered = false;
+  const held = w.espera(["paseo"], version).then((r) => ((answered = true), r));
+  api.last().line(ev("MODIFIED", app("web", "4", "Degraded"))); // not asked
+  api.last().line(ev("MODIFIED", app("paseo", "5", "Healthy", "t1"))); // a reconcile: nothing a pill shows
+  await tick();
+  assert.equal(answered, false);
+  api.last().line(ev("MODIFIED", app("paseo", "6", "Progressing")));
+  const r = await held;
+  assert.equal(r.completo, false);
+  assert.deepEqual(Object.keys(r.apps), ["paseo"]);
+  assert.equal(r.apps.paseo!.health, "Progressing");
+  assert.ok(r.version > version);
+  w.cierra();
+});
+
+test("appWatch: an expired hold answers empty; a since from another instance gets everything", async () => {
+  const api = fakeApi();
+  const w = appWatch(api.open, 10);
+  api.last().line(ev("ADDED", app("paseo", "1")));
+  api.last().line(initialEnd("2"));
+  const { version } = await w.espera(["paseo"], 0);
+  assert.deepEqual(await w.espera(["paseo"], version), { version, completo: false, apps: {} });
+  assert.equal((await w.espera(["paseo"], version - 1e9)).completo, true);
+  w.cierra();
+});
+
+test("appWatch: a closed stream resumes from the last resourceVersion; a 410 lists again and drops what did not come back", async (t) => {
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  const api = fakeApi();
+  const w = appWatch(api.open, 10_000);
+  api.last().line(ev("ADDED", app("paseo", "1")));
+  api.last().line(ev("ADDED", app("viejo", "2")));
+  api.last().line(initialEnd("3"));
+  api.last().line(ev("MODIFIED", app("paseo", "9")));
+  api.last().closed("kubectl salió con 0"); // the API server ends every watch after a while
+  t.mock.timers.tick(30_000);
+  assert.equal(api.opened.length, 2);
+  assert.match(api.last().query, /resourceVersion=9$/);
+
+  api.last().line(ev("ERROR", { kind: "Status", code: 410, message: "too old resource version" }));
+  api.last().closed("kubectl salió con 0");
+  t.mock.timers.tick(30_000);
+  assert.equal(api.opened.length, 3);
+  assert.match(api.last().query, /sendInitialEvents=true/);
+  api.last().line(ev("ADDED", app("paseo", "20")));
+  api.last().line(initialEnd("21"));
+  assert.deepEqual([...(await w.index())], ["paseo"], "viejo was deleted while the watch was away");
+  w.cierra();
+});
+
+test("appWatch: a watch that cannot start answers with its error instead of holding the callers", async () => {
+  const api = fakeApi();
+  const w = appWatch(api.open, 10);
+  api.last().closed("The connection to the server was refused");
+  const r = await w.espera(["paseo"], 0);
+  assert.equal(r.apps.paseo!.error, "The connection to the server was refused");
+  assert.deepEqual([...(await w.index())], []);
+  w.cierra();
+});
