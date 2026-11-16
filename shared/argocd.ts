@@ -3,8 +3,7 @@ import { z } from "zod";
 
 const NAME = "([a-z0-9](?:[-a-z0-9.]*[a-z0-9])?)";
 
-export const appRefSchema = z.object({ app: z.string().regex(/^[a-z0-9]([-a-z0-9.]*[a-z0-9])?$/) });
-export type AppRef = z.output<typeof appRefSchema>;
+const appName = z.string().regex(/^[a-z0-9]([-a-z0-9.]*[a-z0-9])?$/);
 
 export const deploySchema = z.object({
   url: z.string(),
@@ -21,8 +20,17 @@ export const deploySchema = z.object({
 });
 export type DeployStatus = z.output<typeof deploySchema>;
 
-/** The live state of one ArgoCD application, read by the daemon with its own kubeconfig. */
-export const argocdGet = defineRpc({ name: "argocd.get", input: appRefSchema.strict(), output: deploySchema });
+/**
+ * The state of the asked apps, pushed and never polled (SC-5835): the daemon keeps one Kubernetes watch on the Applications
+ * and holds this call until one of the asked apps changes what a pill shows, or the hold expires (empty answer). `apps` holds
+ * only the asked apps that changed after `since`; `completo` — a first call (`since: 0`) or a `since` from before the plugin
+ * (re)started — brings every asked app. An app the cluster does not have comes with `error`.
+ */
+export const argocdWatch = defineRpc({
+  name: "argocd.watch",
+  input: z.object({ apps: z.array(appName), since: z.number().int() }).strict(),
+  output: z.object({ version: z.number().int(), completo: z.boolean(), apps: z.record(z.string(), deploySchema) }),
+});
 
 /** Each agent's ArgoCD app (see lastKnown), resolved by the daemon against the cluster: the client never reads kubectl. */
 export const argocdRefs = defineRpc({

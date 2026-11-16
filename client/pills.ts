@@ -6,7 +6,7 @@ import type {
   PluginClientContext,
 } from "@getpaseo/plugin/client";
 import type { ComponentType } from "react";
-import { agentText, argocdGet, argocdRefs, deployState, lastMention, pillLabel, tone, type DeployStatus, type Tone } from "../shared/argocd.ts";
+import { agentText, argocdRefs, argocdWatch, lastMention, pillLabel, tone, type DeployStatus, type Tone } from "../shared/argocd.ts";
 
 // The slice of the host this module uses: index.client.tsx hands in the plugin context, the tests a fake.
 export interface ArgocdPillClient {
@@ -16,9 +16,6 @@ export interface ArgocdPillClient {
 }
 
 type PaseoAgent = Awaited<ReturnType<PluginClientContext["paseo"]["agents"]["list"]>>["entries"][number]["agent"];
-
-const POLL_RUNNING_MS = 10_000; // a sync or a rollout moves in seconds
-const POLL_SETTLED_MS = 120_000; // settled apps still move on a new merge
 
 /** What each agent's pill shows, shared with the popover so both read one fetch. */
 export interface ArgocdEntry {
@@ -38,7 +35,6 @@ interface Live {
   workspaceId: string;
   release: () => Promise<void>;
   reg: PluginButtonRegistration | null;
-  timer: ReturnType<typeof setTimeout> | null;
   see: (app: string | null) => void;
 }
 
@@ -73,11 +69,66 @@ export function registerArgocdPills(
     }, 0);
   };
 
+  // Each app's state as the daemon last pushed it: a second agent naming a watched app shows it at once.
+  const known = new Map<string, DeployStatus>();
+  const show = (app: string, deploy: DeployStatus) => {
+    known.set(app, deploy);
+    for (const [agentId, e] of entries) {
+      if (e.app !== app || !live.has(agentId)) continue;
+      e.deploy = deploy;
+      live.get(agentId)!.reg?.update({ label: pillLabel(app, deploy), icon: icon(tone(deploy)) });
+    }
+    emit();
+  };
+
+  // One held argocd.watch for every app the pills show (SC-5835): the daemon answers when one of them changes, and the next
+  // call goes out when the last one answers — never on a clock. The same set leaves the held call alone; a new set (an app
+  // named or gone) restarts it asking for all of them once. A failure (daemon gone, plugin reloading) sends nothing until the
+  // next agent change, which asks for everything again; the pills keep their last state meanwhile. Asks made in one burst
+  // (the refs answer names every agent's app at once) go out as one call.
+  let version = 0;
+  let holding: object | null = null;
+  let held = "";
+  let queued = false;
+  const watch = () => {
+    if (queued) return;
+    queued = true;
+    queueMicrotask(() => {
+      queued = false;
+      ask();
+    });
+  };
+  const ask = () => {
+    if (stopped) return;
+    const apps = [...new Set([...live.keys()].flatMap((id) => entries.get(id)?.app ?? []))].sort();
+    const set = apps.join(" ");
+    if (holding && set === held) return;
+    if (set !== held) version = 0; // an answer only covers the apps it was asked for
+    held = set;
+    holding = null; // an answer to an older call is dropped
+    if (apps.length === 0) return;
+    const call = {};
+    holding = call;
+    void client.rpc(argocdWatch, { apps, since: version }).then(
+      (answer) => {
+        if (holding !== call) return;
+        holding = null;
+        version = answer.version;
+        for (const [app, deploy] of Object.entries(answer.apps)) show(app, deploy);
+        watch();
+      },
+      () => {
+        if (holding !== call) return;
+        holding = null;
+        version = 0;
+      },
+    );
+  };
+
   const drop = (agentId: string) => {
     const l = live.get(agentId);
     if (!l) return;
     live.delete(agentId);
-    if (l.timer) clearTimeout(l.timer);
     l.reg?.remove();
     entries.delete(agentId);
     emit();
@@ -92,33 +143,21 @@ export function registerArgocdPills(
       drop(agent.id); // moved workspace: the pill is registered under the old one
     }
     const workspaceId = agent.workspaceId;
-    const entry: Live = { workspaceId, release: () => Promise.resolve(), reg: null, timer: null, see: () => {} };
+    const entry: Live = { workspaceId, release: () => Promise.resolve(), reg: null, see: () => {} };
     live.set(agent.id, entry);
     const current = () => live.get(agent.id) === entry;
-
-    const poll = async () => {
-      if (entry.timer) clearTimeout(entry.timer);
-      entry.timer = null;
-      const e = entries.get(agent.id);
-      if (!e || !current()) return;
-      const deploy = await client.rpc(argocdGet, { app: e.app }).catch((err: Error) => ({ ...noDeploy, error: String(err.message) }));
-      if (!current() || entries.get(agent.id) !== e) return; // dropped, or a newer app replaced it meanwhile
-      e.deploy = deploy;
-      entry.reg?.update({ label: pillLabel(e.app, deploy), icon: icon(tone(deploy)) });
-      emit();
-      entry.timer = setTimeout(() => void poll(), busy(deploy) ? POLL_RUNNING_MS : POLL_SETTLED_MS);
-    };
 
     entry.see = (app) => {
       if (!app || !current()) return;
       const had = entries.get(agent.id);
       if (had?.app === app) return;
-      entries.set(agent.id, { app, deploy: null });
-      const button = { title: `ArgoCD · ${app}`, icon: icon(null), label: pillLabel(app, null) };
+      const deploy = known.get(app) ?? null;
+      entries.set(agent.id, { app, deploy });
+      const button = { title: `ArgoCD · ${app}`, icon: icon(tone(deploy)), label: pillLabel(app, deploy) };
       if (entry.reg) entry.reg.update(button);
       else entry.reg = client.addComposerPill({ id: "argocd", workspaceId, agentId: agent.id, button: { ...button, behavior: { kind: "popover", Content } } });
       emit();
-      void poll();
+      watch();
     };
 
     const sub = client.paseo.agents.ref(agent.id).timeline.subscribe((e) => {
@@ -148,11 +187,13 @@ export function registerArgocdPills(
           const present = new Set(all.map((e) => e.agent.id));
           for (const e of all) upsert(e.agent);
           for (const agentId of [...live.keys()]) if (!present.has(agentId)) drop(agentId);
+          watch();
         },
         update: (message) => {
           if (message.type !== "agent_update") return;
           if (message.payload.kind === "upsert") upsert(message.payload.agent);
           else drop(message.payload.agentId);
+          watch(); // a no-op while the held call covers the same apps
         },
       });
     },
@@ -161,6 +202,7 @@ export function registerArgocdPills(
 
   return () => {
     stopped = true;
+    holding = null;
     if (batch) clearTimeout(batch);
     lifetime.abort();
     stopAgents?.();
@@ -168,10 +210,3 @@ export function registerArgocdPills(
     for (const agentId of [...live.keys()]) drop(agentId);
   };
 }
-
-const noDeploy: DeployStatus = {
-  url: "", panel: "", sync: "Unknown", health: "Unknown", operation: "", revision: "", message: "",
-  startedAt: null, completedAt: null, resources: [], error: null,
-};
-
-const busy = (d: DeployStatus) => !d.error && deployState(d) === "pending";
