@@ -35,7 +35,8 @@ const env = { ...process.env, KUBECONFIG: process.env.KUBECONFIG ?? `${homedir()
 interface AppJson {
   metadata?: { name?: string; resourceVersion?: string; annotations?: Record<string, string> };
   spec: { source?: { repoURL?: string }; targetRevision?: string };
-  status: {
+  // Absent on an Application ArgoCD has not reconciled yet: the watch's ADDED event for a new app (SC-5922).
+  status?: {
     sync?: { status?: string; revision?: string };
     health?: { status?: string; message?: string };
     operationState?: { phase?: string; message?: string; startedAt?: string; finishedAt?: string };
@@ -44,18 +45,19 @@ interface AppJson {
 }
 
 export function parseApp(name: string, a: AppJson): DeployStatus {
-  const op = a.status.operationState;
-  const bad = (a.status.resources ?? []).filter(
+  const st = a.status ?? {};
+  const op = st.operationState;
+  const bad = (st.resources ?? []).filter(
     (r) => (r.health && r.health.status !== "Healthy") || (r.status && r.status !== "Synced"),
   );
   return {
     url: uiBase ? `${uiBase}/${name}` : "",
     panel: panelBase ? `${panelBase}/services?mode=argocd&app=${name}` : "",
-    sync: a.status.sync?.status ?? "Unknown",
-    health: a.status.health?.status ?? "Unknown",
+    sync: st.sync?.status ?? "Unknown",
+    health: st.health?.status ?? "Unknown",
     operation: op?.phase ?? "",
-    revision: a.status.sync?.revision ?? "",
-    message: a.status.health?.message || op?.message || "",
+    revision: st.sync?.revision ?? "",
+    message: st.health?.message || op?.message || "",
     startedAt: op?.startedAt ?? null,
     completedAt: op && op.phase !== "Running" ? (op.finishedAt ?? null) : null,
     resources: bad.map((r) => ({
@@ -140,7 +142,9 @@ export function appWatch(open: OpenWatch = openKubectl, holdMs = HOLD_MS): AppWa
     const from = resume
       ? `&resourceVersion=${encodeURIComponent(resume)}`
       : "&sendInitialEvents=true&resourceVersionMatch=NotOlderThan";
-    stop = open(`watch=1&allowWatchBookmarks=true${from}`, (text) => {
+    // One bad event must not end the watch: a throw here leaves the readline handler and kills the plugin process, which
+    // the daemon never restarts — every later call then times out (SC-5922).
+    const onLine = (text: string) => {
       let event: { type?: string; object?: AppJson & { code?: number; message?: string } };
       try {
         event = JSON.parse(text);
@@ -164,6 +168,13 @@ export function appWatch(open: OpenWatch = openKubectl, holdMs = HOLD_MS): AppWa
       else if (event.type === "BOOKMARK" && o.metadata?.annotations?.["k8s.io/initial-events-end"] === "true") {
         for (const old of [...shown.keys()]) if (!seen.has(old)) put(old, missing(old)); // deleted while the watch was away
         listed();
+      }
+    };
+    stop = open(`watch=1&allowWatchBookmarks=true${from}`, (text) => {
+      try {
+        onLine(text);
+      } catch (e) {
+        console.error(`paseo-argocd: evento del watch descartado: ${e instanceof Error ? e.message : String(e)}`);
       }
     }, (why) => {
       if (closed) return;

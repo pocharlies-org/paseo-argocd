@@ -100,3 +100,41 @@ test("appWatch: a watch that cannot start answers with its error instead of hold
   assert.deepEqual([...(await w.index())], []);
   w.cierra();
 });
+
+test("appWatch: a new Application arrives without status (ADDED before ArgoCD reconciles it) and the watch goes on", async () => {
+  const api = fakeApi();
+  const w = appWatch(api.open, 5_000);
+  api.last().line(ev("ADDED", app("paseo", "1")));
+  api.last().line(initialEnd("2"));
+  const { version } = await w.espera(["paseo"], 0);
+  const held = w.espera(["nueva"], version);
+  api.last().line(ev("ADDED", { metadata: { name: "nueva", resourceVersion: "3" }, spec: {} }));
+  const r = await held;
+  assert.equal(r.apps.nueva!.sync, "Unknown");
+  assert.equal(r.apps.nueva!.health, "Unknown");
+  assert.equal(r.apps.nueva!.error, null);
+  const next = w.espera(["nueva"], r.version);
+  api.last().line(ev("MODIFIED", app("nueva", "4")));
+  assert.equal((await next).apps.nueva!.health, "Healthy");
+  w.cierra();
+});
+
+test("appWatch: an event that cannot be parsed is dropped without ending the watch", async () => {
+  const api = fakeApi();
+  const w = appWatch(api.open, 5_000);
+  api.last().line(initialEnd("1"));
+  const { version } = await w.espera(["paseo"], 0);
+  const held = w.espera(["paseo"], version);
+  const errors: unknown[] = [];
+  const original = console.error;
+  console.error = (...a: unknown[]) => void errors.push(a);
+  try {
+    api.last().line(ev("ADDED", { metadata: { name: "rota", resourceVersion: "2" }, spec: {}, status: { resources: 5 } }));
+  } finally {
+    console.error = original;
+  }
+  assert.equal(errors.length, 1);
+  api.last().line(ev("ADDED", app("paseo", "3")));
+  assert.equal((await held).apps.paseo!.health, "Healthy");
+  w.cierra();
+});
