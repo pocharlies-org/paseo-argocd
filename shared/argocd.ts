@@ -28,8 +28,8 @@ export const deploySchema = z.object({
 export type DeployStatus = z.output<typeof deploySchema>;
 
 /**
- * The state of the asked apps, pushed and never polled (SC-5835): the daemon keeps one Kubernetes watch on the Applications
- * and holds this call until one of the asked apps changes what a pill shows, or the hold expires (empty answer). `apps` holds
+ * The state of the asked apps, pushed and never polled (SC-5835): the daemon keeps one Kubernetes watch per resource
+ * (Applications, Kustomizations, HelmReleases) and holds this call until one of the asked apps changes what a pill shows, or the hold expires (empty answer). `apps` holds
  * only the asked apps that changed after `since`; `completo` — a first call (`since: 0`) or a `since` from before the plugin
  * (re)started — brings every asked app. An app the cluster does not have comes with `error`.
  */
@@ -39,7 +39,7 @@ export const argocdWatch = defineRpc({
   output: z.object({ version: z.number().int(), completo: z.boolean(), apps: z.record(z.string(), deploySchema) }),
 });
 
-/** Each agent's ArgoCD app (see lastKnown), resolved by the daemon against the cluster: the client never reads kubectl. */
+/** Each agent's ArgoCD app or Flux object (see lastKnown), resolved by the daemon against the cluster: the client never reads kubectl. */
 export const argocdRefs = defineRpc({
   name: "argocd.refs",
   input: z.object({ agentIds: z.array(z.string()) }).strict(),
@@ -85,7 +85,7 @@ export function lastMention(text: string): string | null {
 }
 
 /**
- * The ArgoCD app some mentions point at: the last one that exists in the cluster (the daemon keeps each agent's mentions
+ * The ArgoCD app or Flux object some mentions point at: the last one that exists in the cluster (the daemon keeps each agent's mentions
  * and re-checks them). A repo name alone is not a mention: the pill is only for what the session waits on or deploys,
  * never for what it merely reads.
  * shortcut: <apps live in ns argocd and one app per agent (the last named)>, <upgrade if agents need to watch several apps>.

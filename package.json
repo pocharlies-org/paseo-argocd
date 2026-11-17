@@ -3,7 +3,7 @@
   "private": true,
   "version": "1.0.0",
   "type": "module",
-  "description": "Paseo plugin: ArgoCD deployment state of the app an agent is deploying.",
+  "description": "Paseo plugin: ArgoCD or Flux deployment state of what an agent is deploying.",
   "files": [
     "paseo-plugin.json",
     "index.client.tsx",

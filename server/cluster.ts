@@ -105,7 +105,7 @@ const empty: DeployStatus = {
 
 /**
  * What the daemon watches: ArgoCD's Applications and Flux's two ways of deploying a repo, Kustomizations and HelmReleases.
- * The key is what a pill asks for: the app's name for ArgoCD, `ks|hr/<namespace>/<name>` for Flux (see shared fluxKey).
+ * The key is what a pill asks for: the app's name for ArgoCD, `ks|hr/<namespace>/<name>` for Flux (shared `isFlux` and `shortName` read it).
  */
 type Obj = AppJson & FluxJson;
 export interface Kind {
