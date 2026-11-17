@@ -51,7 +51,7 @@ test("lastMention needs no cluster", () => {
 });
 
 test("deployState, tone and label", () => {
-  const d = (sync: string, health: string, operation = "") => ({ sync, health, operation });
+  const d = (sync: string, health: string, operation = "") => ({ motor: "argocd", sync, health, operation });
   assert.equal(deployState(d("Synced", "Healthy", "Succeeded")), "success");
   assert.equal(deployState(d("OutOfSync", "Healthy", "Running")), "pending");
   assert.equal(deployState(d("Synced", "Progressing")), "pending");
@@ -59,6 +59,7 @@ test("deployState, tone and label", () => {
   assert.equal(deployState(d("Synced", "Healthy", "Failed")), "failure");
   assert.equal(deployState(d("OutOfSync", "Missing")), "none");
   const full = (sync: string, health: string, operation = "", error: string | null = null) => ({
+    motor: "argocd" as const,
     url: "", panel: "", sync, health, operation, revision: "", message: "", startedAt: null, completedAt: null, resources: [], error,
   });
   assert.equal(pillLabel("paseo", full("Synced", "Healthy", "Succeeded")), "paseo ✓ Synced·Healthy");
@@ -100,4 +101,53 @@ test("lastKnown: kept mentions are re-checked against a newer cluster index", ()
   assert.equal(lastKnown(found, new Set(["paseo"])), null);
   assert.equal(lastKnown(found, new Set(["nueva"])), "nueva");
   assert.equal(lastKnown(found, new Set(["nueva", "web"])), "web");
+});
+
+test("Flux: the session's own flux and kubectl commands name a Kustomization or HelmRelease, flux-system by default", () => {
+  const flux = new Set(["ks/flux-system/apps", "hr/devopsai/agent-framework", "ks/infra/apps", "paseo"]);
+  const of = (text: string) => lastKnown(mentions(text), flux);
+  assert.equal(of('{"command":"flux reconcile kustomization apps --with-source"}'), "ks/flux-system/apps");
+  assert.equal(of('{"command":"flux reconcile ks apps -n infra"}'), "ks/infra/apps");
+  assert.equal(of('{"command":"flux get helmreleases agent-framework --namespace devopsai"}'), "hr/devopsai/agent-framework");
+  assert.equal(of('{"command":"kubectl -n devopsai get hr agent-framework -o yaml"}'), "hr/devopsai/agent-framework");
+  assert.equal(of('{"command":"kubectl describe kustomization.kustomize.toolkit.fluxcd.io apps -n flux-system"}'), "ks/flux-system/apps");
+  assert.equal(of('{"command":"flux get kustomizations -A"}'), null); // a list, not one object
+  assert.equal(of("argocd app sync paseo y luego flux reconcile ks apps"), "ks/flux-system/apps"); // the last one wins
+  assert.equal(of('{"command":"flux reconcile ks apps; argocd app sync paseo"}'), "paseo");
+});
+
+test("Flux: state and label in Flux's words", () => {
+  const f = (sync: string, health: string, operation = "", error: string | null = null) => ({
+    motor: "flux" as const, url: "", panel: "", sync, health, operation, revision: "", message: "", startedAt: null, completedAt: null,
+    resources: [], error,
+  });
+  assert.equal(pillLabel("ks/flux-system/apps", f("Ready", "ReconciliationSucceeded")), "apps ✓ Ready");
+  assert.equal(pillLabel("hr/devopsai/agent-framework", f("NotReady", "HealthCheckFailed")), "agent-framework ✗ HealthCheckFailed");
+  assert.equal(pillLabel("ks/flux-system/apps", f("Unknown", "Progressing", "Running")), "apps ◐ Progressing");
+  assert.equal(pillLabel("ks/flux-system/apps", f("Ready", "Suspended")), "apps · Suspended");
+  assert.equal(tone(f("Ready", "Suspended")), null);
+  assert.equal(pillLabel("ks/flux-system/apps", f("", "", "", "Flux no está en este clúster")), "apps ?");
+});
+
+test("parseFlux: a Kustomization and a HelmRelease as the API returns them", async () => {
+  const { parseFlux } = await import("../server/cluster.ts"); // dynamic: the parseApp test sets its env before the first load
+  const ks = parseFlux({
+    spec: {},
+    status: {
+      lastAppliedRevision: "main@sha1:77fa32a6e51e9d7dc4ad494e42a33214136c235d",
+      conditions: [{ type: "Ready", status: "False", reason: "HealthCheckFailed", message: "timeout waiting for: [Deployment/devopsai/aurora]" }],
+    },
+  });
+  assert.deepEqual([ks.motor, ks.sync, ks.health, ks.revision, ks.message], [
+    "flux", "NotReady", "HealthCheckFailed", "77fa32a", "timeout waiting for: [Deployment/devopsai/aurora]",
+  ]);
+  const hr = parseFlux({
+    status: {
+      history: [{ chartVersion: "0.8.2+b1b6a93fa922" }],
+      conditions: [{ type: "Ready", status: "True", reason: "UpgradeSucceeded" }, { type: "Reconciling", status: "True" }],
+    },
+  });
+  assert.deepEqual([hr.sync, hr.health, hr.operation, hr.revision], ["Ready", "UpgradeSucceeded", "Running", "0.8.2+b1b6a93fa922"]);
+  assert.equal(deployState(hr), "pending");
+  assert.equal(parseFlux({ spec: { suspend: true } }).health, "Suspended");
 });

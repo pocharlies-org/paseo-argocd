@@ -51,6 +51,7 @@ export function parseApp(name: string, a: AppJson): DeployStatus {
     (r) => (r.health && r.health.status !== "Healthy") || (r.status && r.status !== "Synced"),
   );
   return {
+    motor: "argocd",
     url: uiBase ? `${uiBase}/${name}` : "",
     panel: panelBase ? `${panelBase}/services?mode=argocd&app=${name}` : "",
     sync: st.sync?.status ?? "Unknown",
@@ -70,19 +71,68 @@ export function parseApp(name: string, a: AppJson): DeployStatus {
   };
 }
 
+interface FluxJson {
+  metadata?: { name?: string; namespace?: string; resourceVersion?: string; annotations?: Record<string, string> };
+  spec?: { suspend?: boolean };
+  status?: {
+    conditions?: Array<{ type?: string; status?: string; reason?: string; message?: string }>;
+    lastAppliedRevision?: string; // Kustomization: `main@sha1:<sha>`
+    history?: Array<{ chartVersion?: string }>; // HelmRelease v2: the newest release first
+  };
+}
+
+/** A Flux Kustomization or HelmRelease in the pill's words: Ready or not, with Flux's own reason and message. */
+export function parseFlux(f: FluxJson): DeployStatus {
+  const cond = (type: string) => f.status?.conditions?.find((c) => c.type === type);
+  const ready = cond("Ready");
+  const rev = f.status?.lastAppliedRevision ?? f.status?.history?.[0]?.chartVersion ?? "";
+  const sha = /sha1:([0-9a-f]+)$/.exec(rev)?.[1];
+  return {
+    ...empty,
+    motor: "flux",
+    sync: ready?.status === "True" ? "Ready" : ready?.status === "False" ? "NotReady" : "Unknown",
+    health: f.spec?.suspend ? "Suspended" : (ready?.reason ?? "Unknown"),
+    operation: cond("Reconciling")?.status === "True" ? "Running" : "",
+    revision: sha ? sha.slice(0, 7) : rev,
+    message: ready?.message ?? "",
+  };
+}
+
 const empty: DeployStatus = {
-  url: "", panel: "", sync: "Unknown", health: "Unknown", operation: "", revision: "", message: "",
+  motor: "argocd", url: "", panel: "", sync: "Unknown", health: "Unknown", operation: "", revision: "", message: "",
   startedAt: null, completedAt: null, resources: [], error: null,
 };
+
+/**
+ * What the daemon watches: ArgoCD's Applications and Flux's two ways of deploying a repo, Kustomizations and HelmReleases.
+ * The key is what a pill asks for: the app's name for ArgoCD, `ks|hr/<namespace>/<name>` for Flux (see shared fluxKey).
+ */
+type Obj = AppJson & FluxJson;
+export interface Kind {
+  path: string;
+  key(o: Obj): string | undefined;
+  parse(key: string, o: Obj): DeployStatus;
+}
+const fluxKind = (kind: "ks" | "hr", path: string): Kind => ({
+  path,
+  key: (o) => (o.metadata?.name && o.metadata.namespace ? `${kind}/${o.metadata.namespace}/${o.metadata.name}` : undefined),
+  parse: (_key, o) => parseFlux(o),
+});
+export const KINDS: Record<string, Kind> = {
+  app: { path: `/apis/argoproj.io/v1alpha1/namespaces/${NS}/applications`, key: (o) => o.metadata?.name, parse: (key, o) => parseApp(key, o) },
+  ks: fluxKind("ks", "/apis/kustomize.toolkit.fluxcd.io/v1/kustomizations"),
+  hr: fluxKind("hr", "/apis/helm.toolkit.fluxcd.io/v2/helmreleases"),
+};
+const kindOf = (key: string) => (key.startsWith("ks/") ? "ks" : key.startsWith("hr/") ? "hr" : "app");
 
 const HOLD_MS = 20_000; // a held call answers by then: under the daemon's 30 s plugin request timeout
 const RETRY_MAX_MS = 30_000;
 
-/** One watch request on the Applications: each line of the stream to `line`, then `closed` once with why it ended. Returns its stop. */
-export type OpenWatch = (query: string, line: (text: string) => void, closed: (why: string) => void) => () => void;
+/** One watch request on a resource: each line of the stream to `line`, then `closed` once with why it ended. Returns its stop. */
+export type OpenWatch = (path: string, query: string, line: (text: string) => void, closed: (why: string) => void) => () => void;
 
-const openKubectl: OpenWatch = (query, line, closed) => {
-  const child = spawnProcess("kubectl", ["get", "--raw", `/apis/argoproj.io/v1alpha1/namespaces/${NS}/applications?${query}`], { env, stdio: "pipe" });
+const openKubectl: OpenWatch = (path, query, line, closed) => {
+  const child = spawnProcess("kubectl", ["get", "--raw", `${path}?${query}`], { env, stdio: "pipe" });
   let stderr = "";
   child.stderr.on("data", (chunk) => (stderr = (stderr + chunk).slice(-300)));
   child.on("error", (e) => (stderr ||= e.message)); // kubectl missing: "close" still follows
@@ -106,27 +156,30 @@ export interface AppWatch {
 }
 
 /**
- * ArgoCD pushes to nobody, so the plugin's server holds the one edge (SC-5835): a single Kubernetes watch on the Applications
- * (`kubectl get --raw …?watch=1`), however many clients and agents. The first request streams every app and ends its initial
- * events with a bookmark; a closed stream resumes from the last resourceVersion, and an expired one (410) lists again and drops
- * the apps that did not come back. Only what a pill shows counts as a change: ArgoCD rewrites each Application on every
- * reconcile, and those writes wake nobody.
- * shortcut: <while the watch is down the last state stays on the pills>, <mark them stale if outages turn out to last>.
+ * ArgoCD and Flux push to nobody, so the plugin's server holds the one edge (SC-5835): one Kubernetes watch per resource
+ * (`kubectl get --raw …?watch=1`), however many clients and agents. The first request of each streams every object and ends
+ * its initial events with a bookmark; a closed stream resumes from the last resourceVersion, and an expired one (410) lists
+ * again and drops what did not come back. Only what a pill shows counts as a change: both rewrite their objects on every
+ * reconcile, and those writes wake nobody. A resource the cluster does not serve (no Flux, or Flux without helm-controller)
+ * is simply absent: no retry, and its keys answer that the motor is not there.
+ * shortcut: <while a watch is down the last state stays on the pills>, <mark them stale if outages turn out to last>.
  */
-export function appWatch(open: OpenWatch = openKubectl, holdMs = HOLD_MS): AppWatch {
+export function appWatch(open: OpenWatch = openKubectl, holdMs = HOLD_MS, kinds: Record<string, Kind> = KINDS): AppWatch {
   // A `since` from before this instance (the plugin was reloaded) is older than its start: that caller gets everything again.
   const start = Date.now();
   let version = start;
   const shown = new Map<string, { status: DeployStatus; key: string; at: number }>();
   const waiting = new Set<() => void>();
-  let down: string | null = null; // why the watch is not streaming, while it is not
-  let resume: string | null = null; // resourceVersion to resume from; null = list everything again
-  let stop: () => void = () => {};
+  const down = new Map<string, string>(); // why each resource's watch is not streaming, while it is not
+  const absent = new Set<string>(); // resources this cluster does not serve
+  const stops = new Map<string, () => void>();
+  const retries = new Map<string, ReturnType<typeof setTimeout>>();
   let closed = false;
-  let failures = 0;
-  let retry: ReturnType<typeof setTimeout> | undefined;
-  let listed!: () => void;
-  const ready = new Promise<void>((r) => (listed = r));
+  // Callers wait until every resource has listed, or failed to start: a half index would drop an agent's app.
+  const pending = new Set(Object.keys(kinds));
+  let allListed!: () => void;
+  const ready = new Promise<void>((r) => (allListed = r));
+  const listed = (kind: string) => pending.delete(kind) && pending.size === 0 && allListed();
 
   const put = (name: string, status: DeployStatus) => {
     const key = JSON.stringify(status);
@@ -134,18 +187,29 @@ export function appWatch(open: OpenWatch = openKubectl, holdMs = HOLD_MS): AppWa
     shown.set(name, { status, key, at: ++version });
     for (const wake of [...waiting]) wake();
   };
-  const missing = (name: string): DeployStatus => ({ ...empty, error: down ?? `${name} no existe en ArgoCD (${NS})` });
+  const missing = (name: string): DeployStatus => {
+    const kind = kindOf(name);
+    const flux = kind !== "app";
+    const error =
+      down.get(kind) ??
+      (absent.has(kind)
+        ? `${flux ? "Flux" : "ArgoCD"} no está en este clúster`
+        : `${name} no existe en ${flux ? "Flux" : `ArgoCD (${NS})`}`);
+    return { ...empty, motor: flux ? "flux" : "argocd", error };
+  };
 
-  const connect = () => {
+  const connect = (kind: string, resume: string | null, failures: number) => {
     if (closed) return;
+    const { path, key: keyOf, parse } = kinds[kind]!;
     const seen = new Set<string>();
+    let everListed = false;
     const from = resume
       ? `&resourceVersion=${encodeURIComponent(resume)}`
       : "&sendInitialEvents=true&resourceVersionMatch=NotOlderThan";
     // One bad event must not end the watch: a throw here leaves the readline handler and kills the plugin process, which
     // the daemon never restarts — every later call then times out (SC-5922).
     const onLine = (text: string) => {
-      let event: { type?: string; object?: AppJson & { code?: number; message?: string } };
+      let event: { type?: string; object?: Obj & { code?: number; message?: string } };
       try {
         event = JSON.parse(text);
       } catch {
@@ -154,23 +218,25 @@ export function appWatch(open: OpenWatch = openKubectl, holdMs = HOLD_MS): AppWa
       const o = event.object ?? ({} as NonNullable<typeof event.object>);
       if (event.type === "ERROR") {
         if (o.code === 410) resume = null; // too old to resume: list again on the next connect
-        down = o.message ?? "error del watch de ArgoCD";
+        down.set(kind, o.message ?? "error del watch");
         return;
       }
       failures = 0;
-      down = null;
+      down.delete(kind);
       if (o.metadata?.resourceVersion) resume = o.metadata.resourceVersion;
-      const name = o.metadata?.name;
+      const name = keyOf(o);
       if ((event.type === "ADDED" || event.type === "MODIFIED") && name) {
         seen.add(name);
-        put(name, parseApp(name, o));
+        put(name, parse(name, o));
       } else if (event.type === "DELETED" && name) put(name, missing(name));
       else if (event.type === "BOOKMARK" && o.metadata?.annotations?.["k8s.io/initial-events-end"] === "true") {
-        for (const old of [...shown.keys()]) if (!seen.has(old)) put(old, missing(old)); // deleted while the watch was away
-        listed();
+        // deleted while the watch was away
+        for (const old of [...shown.keys()]) if (kindOf(old) === kind && !seen.has(old)) put(old, missing(old));
+        everListed = true;
+        listed(kind);
       }
     };
-    stop = open(`watch=1&allowWatchBookmarks=true${from}`, (text) => {
+    stops.set(kind, open(path, `watch=1&allowWatchBookmarks=true${from}`, (text) => {
       try {
         onLine(text);
       } catch (e) {
@@ -178,14 +244,18 @@ export function appWatch(open: OpenWatch = openKubectl, holdMs = HOLD_MS): AppWa
       }
     }, (why) => {
       if (closed) return;
-      down ??= why;
-      listed(); // a watch that cannot start must not hold the callers: they get its error
-      failures += 1;
+      if (!everListed && !resume && /NotFound|could not find the requested resource/.test(why)) {
+        absent.add(kind); // this cluster does not serve it: nothing to watch, nothing to retry
+        listed(kind);
+        return;
+      }
+      if (!down.has(kind)) down.set(kind, why);
+      listed(kind); // a watch that cannot start must not hold the callers: they get its error
       // Reconnecting when the stream ends (the API server closes every watch after a while) is the watch itself, not a poll.
-      retry = setTimeout(connect, Math.min(RETRY_MAX_MS, 500 * 2 ** failures));
-    });
+      retries.set(kind, setTimeout(() => connect(kind, resume, failures + 1), Math.min(RETRY_MAX_MS, 500 * 2 ** (failures + 1))));
+    }));
   };
-  connect();
+  for (const kind of Object.keys(kinds)) connect(kind, null, 0);
 
   return {
     async espera(apps, since) {
@@ -218,8 +288,8 @@ export function appWatch(open: OpenWatch = openKubectl, holdMs = HOLD_MS): AppWa
     },
     cierra() {
       closed = true;
-      clearTimeout(retry);
-      stop();
+      for (const t of retries.values()) clearTimeout(t);
+      for (const stop of stops.values()) stop();
       for (const wake of [...waiting]) wake();
     },
   };
