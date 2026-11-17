@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { registerArgocdPills, type ArgocdPillClient } from "../client/pills.ts";
 
 const status = (health: string) => ({
-  url: "", panel: "", sync: "Synced", health, operation: "Succeeded", revision: "abc", message: "",
+  motor: "argocd" as const, url: "", panel: "", sync: "Synced", health, operation: "Succeeded", revision: "abc", message: "",
   startedAt: null, completedAt: null, resources: [], error: null,
 });
 

@@ -6,7 +6,7 @@ import type {
   PluginClientContext,
 } from "@getpaseo/plugin/client";
 import type { ComponentType } from "react";
-import { agentText, argocdRefs, argocdWatch, lastMention, pillLabel, tone, type DeployStatus, type Tone } from "../shared/argocd.ts";
+import { agentText, argocdRefs, argocdWatch, isFlux, lastMention, pillLabel, tone, type DeployStatus, type Tone } from "../shared/argocd.ts";
 
 // The slice of the host this module uses: index.client.tsx hands in the plugin context, the tests a fake.
 export interface ArgocdPillClient {
@@ -39,8 +39,8 @@ interface Live {
 }
 
 /**
- * One composer pill per agent whose conversation names an ArgoCD app: the helm mark tinted by the deployment state
- * and the app name; the popover shows sync, health, the running operation and the resources that are not ok.
+ * One composer pill per agent whose conversation names an ArgoCD app or a Flux Kustomization/HelmRelease: the helm mark
+ * tinted by the deployment state and the name; the popover shows its state, the running operation and what is not ok.
  * shortcut: one app per agent (the last named), upgrade if agents juggle several deployments.
  */
 export function registerArgocdPills(
@@ -153,7 +153,7 @@ export function registerArgocdPills(
       if (had?.app === app) return;
       const deploy = known.get(app) ?? null;
       entries.set(agent.id, { app, deploy });
-      const button = { title: `ArgoCD · ${app}`, icon: icon(tone(deploy)), label: pillLabel(app, deploy) };
+      const button = { title: isFlux(app) ? `Flux · ${app.slice(3)}` : `ArgoCD · ${app}`, icon: icon(tone(deploy)), label: pillLabel(app, deploy) };
       if (entry.reg) entry.reg.update(button);
       else entry.reg = client.addComposerPill({ id: "argocd", workspaceId, agentId: agent.id, button: { ...button, behavior: { kind: "popover", Content } } });
       emit();

@@ -3,13 +3,20 @@ import { z } from "zod";
 
 const NAME = "([a-z0-9](?:[-a-z0-9.]*[a-z0-9])?)";
 
-const appName = z.string().regex(/^[a-z0-9]([-a-z0-9.]*[a-z0-9])?$/);
+// An ArgoCD app's name, or a Flux object as `ks|hr/<namespace>/<name>` (Kustomization, HelmRelease).
+const appName = z.string().regex(/^(?:(?:ks|hr)\/[a-z0-9]([-a-z0-9.]*[a-z0-9])?\/)?[a-z0-9]([-a-z0-9.]*[a-z0-9])?$/);
+
+/** Whether a key names a Flux object (`ks|hr/<namespace>/<name>`) rather than an ArgoCD app. */
+export const isFlux = (key: string) => /^(ks|hr)\//.test(key);
+/** What a pill calls it: the app, or the Flux object's own name. */
+export const shortName = (key: string) => key.slice(key.lastIndexOf("/") + 1);
 
 export const deploySchema = z.object({
+  motor: z.enum(["argocd", "flux"]),
   url: z.string(),
   panel: z.string(), // the platform's Kubernetes view for this app (empty = not configured)
-  sync: z.string(), // Synced | OutOfSync | Unknown
-  health: z.string(), // Healthy | Progressing | Degraded | Suspended | Missing | Unknown
+  sync: z.string(), // ArgoCD: Synced | OutOfSync | Unknown. Flux: Ready | NotReady | Unknown (the Ready condition)
+  health: z.string(), // ArgoCD: Healthy | Progressing | Degraded | Suspended | Missing | Unknown. Flux: Ready's reason, or Suspended
   operation: z.string(), // Running | Succeeded | Failed | Error | Terminated | "" (no operation yet)
   revision: z.string(),
   message: z.string(),
@@ -21,8 +28,8 @@ export const deploySchema = z.object({
 export type DeployStatus = z.output<typeof deploySchema>;
 
 /**
- * The state of the asked apps, pushed and never polled (SC-5835): the daemon keeps one Kubernetes watch on the Applications
- * and holds this call until one of the asked apps changes what a pill shows, or the hold expires (empty answer). `apps` holds
+ * The state of the asked apps, pushed and never polled (SC-5835): the daemon keeps one Kubernetes watch per resource
+ * (Applications, Kustomizations, HelmReleases) and holds this call until one of the asked apps changes what a pill shows, or the hold expires (empty answer). `apps` holds
  * only the asked apps that changed after `since`; `completo` — a first call (`since: 0`) or a `since` from before the plugin
  * (re)started — brings every asked app. An app the cluster does not have comes with `error`.
  */
@@ -32,7 +39,7 @@ export const argocdWatch = defineRpc({
   output: z.object({ version: z.number().int(), completo: z.boolean(), apps: z.record(z.string(), deploySchema) }),
 });
 
-/** Each agent's ArgoCD app (see lastKnown), resolved by the daemon against the cluster: the client never reads kubectl. */
+/** Each agent's ArgoCD app or Flux object (see lastKnown), resolved by the daemon against the cluster: the client never reads kubectl. */
 export const argocdRefs = defineRpc({
   name: "argocd.refs",
   input: z.object({ agentIds: z.array(z.string()) }).strict(),
@@ -49,10 +56,24 @@ const APP_PATTERNS: RegExp[] = [
   new RegExp(`/applications/argocd/${NAME}\\b`, "g"),
 ];
 
-/** Every app the text names, with its position. */
+// Flux, in one command: `flux reconcile|get|suspend|resume|diff|tree kustomization|ks|helmrelease|hr <name>` or
+// `kubectl get|describe|wait kustomization|ks|helmrelease|hr[.<group>] <name>`, with `-n|--namespace <ns>` anywhere in it
+// (flux-system when absent, as the flux CLI does).
+const FLUX_PATTERN = new RegExp(
+  `\\b(?:flux\\s+(?:reconcile|get|suspend|resume|diff|tree)|kubectl\\b[^"\\n|;&]*?\\b(?:get|describe|wait))\\s+` +
+    `(kustomizations?|ks|helmreleases?|hr)(?:\\.[a-z.]+)?[\\s/]+${NAME}\\b[^"\\n|;&]*`,
+  "g",
+);
+const FLUX_NS = /(?:^|\s)(?:-n|--namespace)[\s=]([a-z0-9](?:[-a-z0-9]*[a-z0-9])?)\b/;
+
+/** Every app or Flux object the text names, with its position. */
 export function mentions(text: string): Array<{ at: number; app: string }> {
   const out: Array<{ at: number; app: string }> = [];
   for (const re of APP_PATTERNS) for (const m of text.matchAll(re)) out.push({ at: m.index!, app: m[1] });
+  for (const m of text.matchAll(FLUX_PATTERN)) {
+    const kind = m[1]!.startsWith("h") ? "hr" : "ks";
+    out.push({ at: m.index!, app: `${kind}/${FLUX_NS.exec(m[0])?.[1] ?? "flux-system"}/${m[2]}` });
+  }
   return out;
 }
 
@@ -64,7 +85,7 @@ export function lastMention(text: string): string | null {
 }
 
 /**
- * The ArgoCD app some mentions point at: the last one that exists in the cluster (the daemon keeps each agent's mentions
+ * The ArgoCD app or Flux object some mentions point at: the last one that exists in the cluster (the daemon keeps each agent's mentions
  * and re-checks them). A repo name alone is not a mention: the pill is only for what the session waits on or deploys,
  * never for what it merely reads.
  * shortcut: <apps live in ns argocd and one app per agent (the last named)>, <upgrade if agents need to watch several apps>.
@@ -90,7 +111,12 @@ export function agentText(item: { type: string; text?: string; detail?: { type?:
 }
 
 export type DeployState = "pending" | "failure" | "success" | "none";
-export function deployState(d: { sync: string; health: string; operation: string }): DeployState {
+export function deployState(d: { motor: string; sync: string; health: string; operation: string }): DeployState {
+  if (d.motor === "flux") {
+    if (d.health === "Suspended") return "none";
+    if (d.sync === "NotReady") return "failure";
+    return d.sync === "Unknown" || d.operation === "Running" ? "pending" : "success";
+  }
   if (d.health === "Degraded" || d.operation === "Failed" || d.operation === "Error" || d.operation === "Terminated")
     return "failure";
   if (d.operation === "Running" || d.health === "Progressing" || d.sync === "Unknown") return "pending";
@@ -114,8 +140,11 @@ export const GLYPH: Record<DeployState, string> = { success: "✓", failure: "�
  * say good/bad/pending; the words say which of the two axes is which, so a glance answers "está todo bien".
  * ArgoCD's own words, as `kubectl get application` and the panel show them (the popover is where they read in Spanish).
  */
-export function pillLabel(app: string, d: DeployStatus | null): string {
+export function pillLabel(key: string, d: DeployStatus | null): string {
+  const app = shortName(key);
   if (!d) return app;
   if (d.error) return `${app} ?`;
+  // Flux's words, as `flux get` shows them: Ready, or the reason it is not (HealthCheckFailed, Progressing, Suspended…).
+  if (d.motor === "flux") return `${app} ${GLYPH[deployState(d)]} ${d.sync === "Ready" && d.health !== "Suspended" ? "Ready" : d.health}`;
   return `${app} ${GLYPH[deployState(d)]} ${d.sync}·${d.health}`;
 }

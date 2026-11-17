@@ -1,13 +1,14 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { appWatch, type OpenWatch } from "../server/cluster.ts";
+import { KINDS, appWatch, type OpenWatch } from "../server/cluster.ts";
 
 // A fake API server: records each watch request; the test pushes its lines and closes it.
 function fakeApi() {
-  const opened: Array<{ query: string; line: (t: string) => void; closed: (why: string) => void }> = [];
-  const open: OpenWatch = (query, line, closed) => (opened.push({ query, line, closed }), () => {});
-  return { open, opened, last: () => opened.at(-1)! };
+  const opened: Array<{ path: string; query: string; line: (t: string) => void; closed: (why: string) => void }> = [];
+  const open: OpenWatch = (path, query, line, closed) => (opened.push({ path, query, line, closed }), () => {});
+  return { open, opened, last: () => opened.at(-1)!, of: (part: string) => opened.filter((o) => o.path.includes(part)).at(-1)! };
 }
+const ARGO = { app: KINDS.app! }; // the ArgoCD-only watch the first tests exercise
 const app = (name: string, rv: string, health = "Healthy", reconciledAt = "t0") => ({
   metadata: { name, resourceVersion: rv },
   spec: {},
@@ -19,7 +20,7 @@ const tick = () => new Promise((r) => setImmediate(r));
 
 test("appWatch: one watch streams the initial apps; callers wait for the whole list", async () => {
   const api = fakeApi();
-  const w = appWatch(api.open, 10);
+  const w = appWatch(api.open, 10, ARGO);
   assert.equal(api.opened.length, 1);
   assert.match(api.last().query, /watch=1.*sendInitialEvents=true&resourceVersionMatch=NotOlderThan/);
   const first = w.espera(["paseo", "nada"], 0);
@@ -36,7 +37,7 @@ test("appWatch: one watch streams the initial apps; callers wait for the whole l
 
 test("appWatch: holds the call until an asked app changes what a pill shows, and answers only that", async () => {
   const api = fakeApi();
-  const w = appWatch(api.open, 5_000);
+  const w = appWatch(api.open, 5_000, ARGO);
   api.last().line(ev("ADDED", app("paseo", "1")));
   api.last().line(ev("ADDED", app("web", "2")));
   api.last().line(initialEnd("3"));
@@ -58,7 +59,7 @@ test("appWatch: holds the call until an asked app changes what a pill shows, and
 
 test("appWatch: an expired hold answers empty; a since from another instance gets everything", async () => {
   const api = fakeApi();
-  const w = appWatch(api.open, 10);
+  const w = appWatch(api.open, 10, ARGO);
   api.last().line(ev("ADDED", app("paseo", "1")));
   api.last().line(initialEnd("2"));
   const { version } = await w.espera(["paseo"], 0);
@@ -70,7 +71,7 @@ test("appWatch: an expired hold answers empty; a since from another instance get
 test("appWatch: a closed stream resumes from the last resourceVersion; a 410 lists again and drops what did not come back", async (t) => {
   t.mock.timers.enable({ apis: ["setTimeout"] });
   const api = fakeApi();
-  const w = appWatch(api.open, 10_000);
+  const w = appWatch(api.open, 10_000, ARGO);
   api.last().line(ev("ADDED", app("paseo", "1")));
   api.last().line(ev("ADDED", app("viejo", "2")));
   api.last().line(initialEnd("3"));
@@ -93,7 +94,7 @@ test("appWatch: a closed stream resumes from the last resourceVersion; a 410 lis
 
 test("appWatch: a watch that cannot start answers with its error instead of holding the callers", async () => {
   const api = fakeApi();
-  const w = appWatch(api.open, 10);
+  const w = appWatch(api.open, 10, ARGO);
   api.last().closed("The connection to the server was refused");
   const r = await w.espera(["paseo"], 0);
   assert.equal(r.apps.paseo!.error, "The connection to the server was refused");
@@ -103,7 +104,7 @@ test("appWatch: a watch that cannot start answers with its error instead of hold
 
 test("appWatch: a new Application arrives without status (ADDED before ArgoCD reconciles it) and the watch goes on", async () => {
   const api = fakeApi();
-  const w = appWatch(api.open, 5_000);
+  const w = appWatch(api.open, 5_000, ARGO);
   api.last().line(ev("ADDED", app("paseo", "1")));
   api.last().line(initialEnd("2"));
   const { version } = await w.espera(["paseo"], 0);
@@ -121,7 +122,7 @@ test("appWatch: a new Application arrives without status (ADDED before ArgoCD re
 
 test("appWatch: an event that cannot be parsed is dropped without ending the watch", async () => {
   const api = fakeApi();
-  const w = appWatch(api.open, 5_000);
+  const w = appWatch(api.open, 5_000, ARGO);
   api.last().line(initialEnd("1"));
   const { version } = await w.espera(["paseo"], 0);
   const held = w.espera(["paseo"], version);
@@ -136,5 +137,33 @@ test("appWatch: an event that cannot be parsed is dropped without ending the wat
   assert.equal(errors.length, 1);
   api.last().line(ev("ADDED", app("paseo", "3")));
   assert.equal((await held).apps.paseo!.health, "Healthy");
+  w.cierra();
+});
+
+test("appWatch with Flux: one watch per resource; a resource the cluster does not serve is absent and never retried", async (t) => {
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  const api = fakeApi();
+  const w = appWatch(api.open, 5_000);
+  assert.deepEqual(api.opened.map((o) => o.path.split("/")[2]).sort(), ["argoproj.io", "helm.toolkit.fluxcd.io", "kustomize.toolkit.fluxcd.io"]);
+  const ks = { metadata: { name: "apps", namespace: "flux-system", resourceVersion: "1" },
+    status: { conditions: [{ type: "Ready", status: "True", reason: "ReconciliationSucceeded" }] } };
+  api.of("argoproj").line(initialEnd("1"));
+  api.of("kustomize").line(ev("ADDED", ks));
+  api.of("kustomize").line(initialEnd("2"));
+  api.of("helm").closed("Error from server (NotFound): the server could not find the requested resource");
+  const r = await w.espera(["ks/flux-system/apps", "hr/devopsai/api", "paseo"], 0);
+  assert.equal(r.apps["ks/flux-system/apps"]!.sync, "Ready");
+  assert.equal(r.apps["hr/devopsai/api"]!.error, "Flux no está en este clúster");
+  assert.equal(r.apps.paseo!.error, "paseo no existe en ArgoCD (argocd)");
+  assert.deepEqual([...(await w.index())], ["ks/flux-system/apps"]);
+  t.mock.timers.tick(60_000);
+  assert.equal(api.opened.length, 3, "no retry for a resource that does not exist");
+
+  const { version } = r;
+  const held = w.espera(["ks/flux-system/apps"], version);
+  api.of("kustomize").line(ev("MODIFIED", { ...ks, metadata: { ...ks.metadata, resourceVersion: "3" },
+    status: { conditions: [{ type: "Ready", status: "False", reason: "HealthCheckFailed", message: "timeout" }] } }));
+  const changed = await held;
+  assert.equal(changed.apps["ks/flux-system/apps"]!.health, "HealthCheckFailed");
   w.cierra();
 });

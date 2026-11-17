@@ -2,7 +2,7 @@ import type { PluginButtonContentProps } from "@getpaseo/plugin/client";
 import { ExternalLink } from "@getpaseo/plugin/client/ui";
 import { useEffect, useState } from "react";
 import { ScrollView, Text, View } from "react-native";
-import { GLYPH, deployState, type DeployState } from "../shared/argocd.ts";
+import { GLYPH, deployState, isFlux, shortName, type DeployState } from "../shared/argocd.ts";
 import { argocdEntry, subscribeArgocd } from "./pills.ts";
 
 function duration(start: string | null, end: string | null, now: number): string {
@@ -11,7 +11,11 @@ function duration(start: string | null, end: string | null, now: number): string
   return s < 60 ? `${s}s` : `${Math.floor(s / 60)}m ${s % 60}s`;
 }
 
-const WORD: Record<string, string> = { Synced: "sincronizado", OutOfSync: "desincronizado", Healthy: "sano", Degraded: "degradado", Progressing: "desplegando" };
+const WORD: Record<string, string> = {
+  Synced: "sincronizado", OutOfSync: "desincronizado", Healthy: "sano", Degraded: "degradado", Progressing: "desplegando",
+  Ready: "listo", NotReady: "no listo", Suspended: "suspendido",
+};
+const FLUX_KIND: Record<string, string> = { ks: "Kustomization", hr: "HelmRelease" };
 
 export function ArgocdPopover(props: PluginButtonContentProps) {
   const { theme } = props;
@@ -28,16 +32,17 @@ export function ArgocdPopover(props: PluginButtonContentProps) {
     s === "success" ? c.statusSuccess : s === "failure" ? c.statusDanger : s === "pending" ? c.statusWarning : c.foregroundMuted;
   const muted = { color: c.foregroundMuted, fontSize: 12 };
 
-  if (!entry) return <Text style={{ ...muted, padding: 12 }}>Sin despliegue de ArgoCD en esta conversación.</Text>;
+  if (!entry) return <Text style={{ ...muted, padding: 12 }}>Sin despliegue de ArgoCD ni de Flux en esta conversación.</Text>;
   const { app, deploy } = entry;
-  if (!deploy) return <Text style={{ ...muted, padding: 12 }}>Leyendo {app} en ArgoCD…</Text>;
+  const flux = isFlux(app);
+  if (!deploy) return <Text style={{ ...muted, padding: 12 }}>Leyendo {shortName(app)} en {flux ? "Flux" : "ArgoCD"}…</Text>;
   const s = deployState(deploy);
   const now = Date.now();
 
   return (
     <View style={{ padding: 12, gap: 8, minWidth: 320, maxWidth: 480 }}>
       <View style={{ gap: 2 }}>
-        <Text style={muted}>ArgoCD · argocd/{app}</Text>
+        <Text style={muted}>{flux ? `Flux · ${FLUX_KIND[app.slice(0, 2)]} ${app.slice(3)}` : `ArgoCD · argocd/${app}`}</Text>
         {deploy.panel || deploy.url ? (
           <ExternalLink href={deploy.panel || deploy.url}>
             <Text style={{ color: c.foreground, fontSize: 14, fontWeight: "600" }}>{app}</Text>
@@ -53,11 +58,14 @@ export function ArgocdPopover(props: PluginButtonContentProps) {
       {!deploy.error ? (
         <>
           <Text style={{ color: stateOf(s), fontSize: 13, fontWeight: "600" }}>
-            {GLYPH[s]} {WORD[deploy.sync] ?? deploy.sync.toLowerCase()} · {WORD[deploy.health] ?? deploy.health.toLowerCase()}
-            {deploy.operation ? ` · operación ${deploy.operation.toLowerCase()}` : ""}
+            {flux
+              ? `${GLYPH[s]} ${WORD[deploy.health] ?? WORD[deploy.sync] ?? deploy.sync}${deploy.sync === "Ready" ? "" : ` · ${deploy.health}`}` +
+                (deploy.operation === "Running" ? " · reconciliando" : "")
+              : `${GLYPH[s]} ${WORD[deploy.sync] ?? deploy.sync.toLowerCase()} · ${WORD[deploy.health] ?? deploy.health.toLowerCase()}` +
+                (deploy.operation ? ` · operación ${deploy.operation.toLowerCase()}` : "")}
           </Text>
           <Text style={muted}>
-            {[deploy.revision ? deploy.revision.slice(0, 7) : "", duration(deploy.startedAt, deploy.completedAt, now)]
+            {[flux ? deploy.revision : deploy.revision.slice(0, 7), duration(deploy.startedAt, deploy.completedAt, now)]
               .filter(Boolean)
               .join(" · ")}
           </Text>
