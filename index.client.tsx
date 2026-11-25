@@ -9,12 +9,14 @@ import type { Tone } from "./shared/argocd";
 const FILL: Record<NonNullable<Tone>, string> = { pending: "#E3B341", failure: "#F85149", success: "#3FB950" };
 const IDLE = "#EF7B4D"; // Argo CD's own orange
 
-const icon = (tone: Tone) => {
+// angle: null at rest; while the session waits on the deployment the pills turn it (see client/pills.ts).
+const icon = (tone: Tone, angle: number | null) => {
   const colour = tone ? FILL[tone] : IDLE;
-  const svg =
-    `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="${colour}" stroke-width="2" stroke-linecap="round">` +
+  const wheel =
     `<circle cx="12" cy="12" r="9"/><circle cx="12" cy="12" r="3.2"/>` +
-    `<line x1="12" y1="3" x2="12" y2="8.8"/><line x1="4.2" y1="16.5" x2="9.2" y2="13.6"/><line x1="19.8" y1="16.5" x2="14.8" y2="13.6"/></svg>`;
+    `<line x1="12" y1="3" x2="12" y2="8.8"/><line x1="4.2" y1="16.5" x2="9.2" y2="13.6"/><line x1="19.8" y1="16.5" x2="14.8" y2="13.6"/>`;
+  const body = angle === null ? wheel : `<g transform="rotate(${angle} 12 12)">${wheel}</g>`;
+  const svg = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="${colour}" stroke-width="2" stroke-linecap="round">${body}</svg>`;
   return { svg } as unknown as PluginButtonIcon;
 };
 

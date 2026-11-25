@@ -95,3 +95,38 @@ test("registerArgocdPills: a newly named app restarts the watch for the new set;
   assert.equal(watches.length, 3);
   stop();
 });
+
+test("registerArgocdPills: the helm mark turns while the session's last word is an ESPERA on the deployment", async () => {
+  const angles: Array<number | null> = [];
+  const timelines = new Map<string, (e: unknown) => void>();
+  const client = {
+    addComposerPill: () => ({ update() {}, remove() {} }),
+    rpc: (contract: any) =>
+      contract.name === "argocd.refs"
+        ? Promise.resolve({ refs: { a: "paseo" }, esperas: { a: false } })
+        : new Promise(() => {}), // the held watch answers nothing: the spin is about the timeline, not the cluster
+    paseo: {
+      agents: {
+        list: async () => ({
+          entries: [{ agent: { id: "a", status: "idle", workspaceId: "w" } }],
+          subscription: { subscribe: () => () => {}, release: async () => {} },
+        }),
+        ref: (id: string) => ({
+          timeline: { subscribe: (fn: (e: unknown) => void) => (timelines.set(id, fn), { ready: Promise.resolve(), release: async () => {} }) },
+        }),
+      },
+    },
+  } as unknown as ArgocdPillClient;
+  const stop = registerArgocdPills(client, () => null, (_t, angle) => (angles.push(angle), { name: "x" }) as never);
+  try {
+    await tick(10);
+    assert.equal(angles.at(-1), null); // not waiting: still
+    timelines.get("a")!({ event: { type: "timeline", item: { type: "assistant_message", text: "ESPERA: argocd paseo ~3m → pin" } } });
+    await tick(200); // the first tick turns it 30°
+    assert.equal(angles.at(-1), 30); // waiting: turning
+    timelines.get("a")!({ event: { type: "timeline", item: { type: "user_message", text: "EVENTO: paseo Synced·Healthy" } } });
+    assert.equal(angles.at(-1), null); // woken: still again
+  } finally {
+    stop();
+  }
+});

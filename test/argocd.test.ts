@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { agentText, deployState, lastKnown, lastMention, mentions, pillLabel, tone } from "../shared/argocd.ts";
+import {agentText, deployState, lastKnown, lastMention, mentions, pillLabel, tone, esperaArgocd} from "../shared/argocd.ts";
 
 const known = new Set(["paseo", "web", "litellm"]);
 const app = (text: string) => lastKnown(mentions(text), known);
@@ -150,4 +150,10 @@ test("parseFlux: a Kustomization and a HelmRelease as the API returns them", asy
   assert.deepEqual([hr.sync, hr.health, hr.operation, hr.revision], ["Ready", "UpgradeSucceeded", "Running", "0.8.2+b1b6a93fa922"]);
   assert.equal(deployState(hr), "pending");
   assert.equal(parseFlux({ spec: { suspend: true } }).health, "Suspended");
+});
+
+test("esperaArgocd: turns only while the last own word is an ArgoCD ESPERA", () => {
+  assert.equal(esperaArgocd([{ type: "assistant_message", text: "ESPERA: argocd paseo ~3m → pin" }]), true);
+  assert.equal(esperaArgocd([{ type: "assistant_message", text: "ESPERA: ci o/r#7 ~25m → fusionar" }]), false);
+  assert.equal(esperaArgocd([{ type: "assistant_message", text: "ESPERA: argocd paseo" }, { type: "user_message", text: "EVENTO: Synced·Healthy" }]), false);
 });
