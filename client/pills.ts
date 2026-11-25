@@ -6,7 +6,7 @@ import type {
   PluginClientContext,
 } from "@getpaseo/plugin/client";
 import type { ComponentType } from "react";
-import { agentText, argocdRefs, argocdWatch, isFlux, lastMention, pillLabel, tone, type DeployStatus, type Tone } from "../shared/argocd.ts";
+import { ESPERA_ARGOCD, agentText, argocdRefs, argocdWatch, isFlux, lastMention, pillLabel, tone, type DeployStatus, type Tone } from "../shared/argocd.ts";
 
 // The slice of the host this module uses: index.client.tsx hands in the plugin context, the tests a fake.
 export interface ArgocdPillClient {
@@ -35,7 +35,10 @@ interface Live {
   workspaceId: string;
   release: () => Promise<void>;
   reg: PluginButtonRegistration | null;
-  see: (app: string | null) => void;
+  waiting: boolean; // the session's last word is an ESPERA on the deployment: its icon turns (Dani 25-11)
+  angle: number;
+  spin: ReturnType<typeof setInterval> | null;
+  see: (app: string | null, waiting?: boolean) => void;
 }
 
 /**
@@ -46,7 +49,7 @@ interface Live {
 export function registerArgocdPills(
   client: ArgocdPillClient,
   Content: ComponentType<PluginButtonContentProps>,
-  icon: (tone: Tone) => PluginButtonIcon,
+  icon: (tone: Tone, angle: number | null) => PluginButtonIcon,
 ): () => void {
   const live = new Map<string, Live>();
   const lifetime = new AbortController();
@@ -63,8 +66,8 @@ export function registerArgocdPills(
       batch = null;
       const agentIds = [...wanted];
       wanted.clear();
-      void client.rpc(argocdRefs, { agentIds }).then(({ refs }) => {
-        for (const id of agentIds) live.get(id)?.see(refs[id] ?? null);
+      void client.rpc(argocdRefs, { agentIds }).then(({ refs, esperas }) => {
+        for (const id of agentIds) live.get(id)?.see(refs[id] ?? null, esperas?.[id] ?? false);
       }, () => {});
     }, 0);
   };
@@ -76,7 +79,8 @@ export function registerArgocdPills(
     for (const [agentId, e] of entries) {
       if (e.app !== app || !live.has(agentId)) continue;
       e.deploy = deploy;
-      live.get(agentId)!.reg?.update({ label: pillLabel(app, deploy), icon: icon(tone(deploy)) });
+      const l = live.get(agentId)!;
+      l.reg?.update({ label: pillLabel(app, deploy), icon: icon(tone(deploy), l.waiting ? l.angle : null) });
     }
     emit();
   };
@@ -129,6 +133,7 @@ export function registerArgocdPills(
     const l = live.get(agentId);
     if (!l) return;
     live.delete(agentId);
+    if (l.spin) clearInterval(l.spin);
     l.reg?.remove();
     entries.delete(agentId);
     emit();
@@ -143,17 +148,35 @@ export function registerArgocdPills(
       drop(agent.id); // moved workspace: the pill is registered under the old one
     }
     const workspaceId = agent.workspaceId;
-    const entry: Live = { workspaceId, release: () => Promise.resolve(), reg: null, see: () => {} };
+    const entry: Live = { workspaceId, release: () => Promise.resolve(), reg: null, waiting: false, angle: 0, spin: null, see: () => {} };
     live.set(agent.id, entry);
     const current = () => live.get(agent.id) === entry;
 
-    entry.see = (app) => {
+    const paintIcon = () => {
+      const e = entries.get(agent.id);
+      if (e) entry.reg?.update({ icon: icon(tone(e.deploy), entry.waiting ? entry.angle : null) });
+    };
+    // While the session waits on the deployment its helm mark turns (30° every 150 ms): a JS step, not SMIL, so it moves
+    // on every renderer that shows the svg at all. shortcut: <one shared clock would be cheaper if many pills spin at once>.
+    const setWaiting = (v: boolean) => {
+      if (entry.waiting === v) return;
+      entry.waiting = v;
+      if (v) entry.spin = setInterval(() => { entry.angle = (entry.angle + 30) % 360; paintIcon(); }, 150);
+      else {
+        if (entry.spin) clearInterval(entry.spin);
+        entry.spin = null;
+        paintIcon();
+      }
+    };
+
+    entry.see = (app, waiting) => {
       if (!app || !current()) return;
+      if (waiting !== undefined) setWaiting(waiting);
       const had = entries.get(agent.id);
       if (had?.app === app) return;
       const deploy = known.get(app) ?? null;
       entries.set(agent.id, { app, deploy });
-      const button = { title: isFlux(app) ? `Flux · ${app.slice(3)}` : `ArgoCD · ${app}`, icon: icon(tone(deploy)), label: pillLabel(app, deploy) };
+      const button = { title: isFlux(app) ? `Flux · ${app.slice(3)}` : `ArgoCD · ${app}`, icon: icon(tone(deploy), entry.waiting ? entry.angle : null), label: pillLabel(app, deploy) };
       if (entry.reg) entry.reg.update(button);
       else entry.reg = client.addComposerPill({ id: "argocd", workspaceId, agentId: agent.id, button: { ...button, behavior: { kind: "popover", Content } } });
       emit();
@@ -165,6 +188,11 @@ export function registerArgocdPills(
       // Live events have no cluster knowledge: adopt the last named app as it appears (the refs RPC re-validates on restore).
       // Only the session's own text counts, as in the refs RPC: a tool result naming an app must not raise the pill.
       if (e.event.type === "timeline") {
+        // The wait lives in the session's own words: its final message's ESPERA raises the spin, the next turn's first
+        // message (the supervisor's EVENTO wake) drops it. Tool results never move it.
+        const item = e.event.item as { type?: string; text?: string };
+        if (item.type === "assistant_message") setWaiting(ESPERA_ARGOCD.test(item.text ?? ""));
+        else if (item.type === "user_message") setWaiting(false);
         const app = lastMention(agentText(e.event.item));
         if (app) entry.see(app);
       } else if (e.event.type === "replacement" || e.event.type === "subscription_restored") lookup(agent.id);

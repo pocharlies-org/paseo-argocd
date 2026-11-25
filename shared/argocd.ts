@@ -39,11 +39,14 @@ export const argocdWatch = defineRpc({
   output: z.object({ version: z.number().int(), completo: z.boolean(), apps: z.record(z.string(), deploySchema) }),
 });
 
-/** Each agent's ArgoCD app or Flux object (see lastKnown), resolved by the daemon against the cluster: the client never reads kubectl. */
+/**
+ * Each agent's ArgoCD app or Flux object (see lastKnown) and whether it is waiting on a deployment (see esperaArgocd),
+ * resolved by the daemon against the cluster: the client never reads kubectl.
+ */
 export const argocdRefs = defineRpc({
   name: "argocd.refs",
   input: z.object({ agentIds: z.array(z.string()) }).strict(),
-  output: z.object({ refs: z.record(z.string(), z.string().nullable()) }),
+  output: z.object({ refs: z.record(z.string(), z.string().nullable()), esperas: z.record(z.string(), z.boolean()) }),
 });
 
 // A session names its app when it deploys or watches it: `argocd app sync paseo`, `ESPERA: argocd paseo`,
@@ -108,6 +111,20 @@ export function agentText(item: { type: string; text?: string; detail?: { type?:
   if (item.type === "user_message" || item.type === "assistant_message") return item.text ?? "";
   if (item.type === "tool_call") return item.detail?.type === "shell" ? item.detail.command ?? "" : "";
   return "";
+}
+
+// The kind of `ESPERA:` the supervisor wakes with an ArgoCD event (skill pr-watcher): while the session's last own word
+// is one, its pill turns — Dani sees at a glance that the wait is on the deployment and not on GitHub (25-11).
+export const ESPERA_ARGOCD = /ESPERA:\s*argocd\b/;
+
+/** Whether the session's last own word is an ArgoCD-side ESPERA: walk its timeline items oldest first (the client folds one at a time). */
+export function esperaArgocd(items: ReadonlyArray<{ type?: string; text?: string }>): boolean {
+  let waiting = false;
+  for (const it of items) {
+    if (it.type === "user_message") waiting = false; // a new turn started: the wait is over until its final message says otherwise
+    else if (it.type === "assistant_message") waiting = ESPERA_ARGOCD.test(it.text ?? "");
+  }
+  return waiting;
 }
 
 export type DeployState = "pending" | "failure" | "success" | "none";
